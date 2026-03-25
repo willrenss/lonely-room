@@ -7,8 +7,19 @@
 
 import SwiftUI
 
+// MARK: - AppDelegate — force landscape
+class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?)
+    -> UIInterfaceOrientationMask {
+        return .landscape
+    }
+}
+
 @main
 struct lonely_roomApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
         WindowGroup {
             ContentView()
