@@ -109,30 +109,42 @@ struct KostSceneView: UIViewRepresentable {
                 isRotating = false
                 dragOffset = .zero
                 lastPanX = pt.x
-                // Pan on scene is only for dragging furniture
                 if let hit = vm.hitTestFurniture(at: pt) {
                     vm.selectFurniture(hit)
+                    // Compute drag offset using the item's own Y plane
                     let itemY = hit.node.position.y
                     if let worldPos = vm.hitTestPlane(at: pt, y: itemY) {
                         let fp = hit.node.position
                         dragOffset = SIMD2<Float>(worldPos.x - fp.x, worldPos.z - fp.z)
                     }
+                } else {
+                    isRotating = true
                 }
-                // isRotating stays false — camera rotation handled by SwiftUI layer
             case .changed:
                 let translation = gesture.translation(in: view)
                 let moveDist = hypot(translation.x, translation.y)
                 if moveDist > 6 { panIsDragging = true }
 
-                guard panIsDragging, let item = vm.selectedFurniture else { return }
-                let itemY = item.node.position.y
-                if let worldPos = vm.hitTestPlane(at: pt, y: itemY) {
-                    let adjusted = SCNVector3(worldPos.x - dragOffset.x,
-                                             itemY,
-                                             worldPos.z - dragOffset.y)
-                    vm.moveFurniture(item, to: adjusted)
+                if isRotating {
+                    let dx = pt.x - lastPanX
+                    let sensitivity: Float = .pi / Float(view.bounds.width)
+                    vm.rotateCamera(by: Float(dx) * sensitivity)
+                    lastPanX = pt.x
+                } else {
+                    guard panIsDragging, let item = vm.selectedFurniture else { return }
+                    // Always unproject onto the item's own Y plane — never drops to Y=0
+                    let itemY = item.node.position.y
+                    if let worldPos = vm.hitTestPlane(at: pt, y: itemY) {
+                        let adjusted = SCNVector3(worldPos.x - dragOffset.x,
+                                                 itemY,
+                                                 worldPos.z - dragOffset.y)
+                        vm.moveFurniture(item, to: adjusted)
+                    }
                 }
             case .ended, .cancelled:
+                if panIsDragging && !isRotating {
+                    vm.saveFurniture()
+                }
                 panIsDragging = false
                 isRotating = false
                 dragOffset = .zero
@@ -159,11 +171,11 @@ struct KostSceneView: UIViewRepresentable {
         let innerFront =  roomD / 2
         let innerBack  = -roomD / 2
 
-        func box(_ w: Float, _ h: Float, _ d: Float, color: UIColor, pos: SCNVector3) {
+        func box(_ w: Float, _ h: Float, _ d: Float, color: UIColor, pos: SCNVector3, name: String? = nil) {
             let geo = SCNBox(width: CGFloat(w), height: CGFloat(h), length: CGFloat(d), chamferRadius: 0)
             geo.firstMaterial?.diffuse.contents = color
             geo.firstMaterial?.lightingModel = .lambert
-            let n = SCNNode(geometry: geo); n.position = pos
+            let n = SCNNode(geometry: geo); n.position = pos; n.name = name
             scene.rootNode.addChildNode(n)
         }
 
@@ -201,13 +213,13 @@ struct KostSceneView: UIViewRepresentable {
         }
 
         // ── Ceiling ──
-        box(roomW + wT*2, wT, roomD + wT*2, color: ceilColor, pos: SCNVector3(0, roomH + wT/2, 0))
+        box(roomW + wT*2, wT, roomD + wT*2, color: ceilColor, pos: SCNVector3(0, roomH + wT/2, 0), name: "wall")
 
         // ── Left wall ──
-        box(wT, roomH, roomD + wT*2, color: wallColor, pos: SCNVector3(innerLeft - wT/2, roomH/2, 0))
+        box(wT, roomH, roomD + wT*2, color: wallColor, pos: SCNVector3(innerLeft - wT/2, roomH/2, 0), name: "wall")
 
         // ── Right wall ──
-        box(wT, roomH, roomD + wT*2, color: wallColor, pos: SCNVector3(innerRight + wT/2, roomH/2, 0))
+        box(wT, roomH, roomD + wT*2, color: wallColor, pos: SCNVector3(innerRight + wT/2, roomH/2, 0), name: "wall")
 
         // ── Front wall with door cutout ──
         let dW: Float = 0.95, dH: Float = 2.1, dCx: Float = 1.5
@@ -215,11 +227,11 @@ struct KostSceneView: UIViewRepresentable {
         let dRight = dCx + dW/2
         let fZ = innerFront + wT/2
         box(dLeft - innerLeft, roomH, wT, color: wallColor,
-            pos: SCNVector3(innerLeft + (dLeft - innerLeft)/2, roomH/2, fZ))
+            pos: SCNVector3(innerLeft + (dLeft - innerLeft)/2, roomH/2, fZ), name: "wall")
         box(innerRight - dRight, roomH, wT, color: wallColor,
-            pos: SCNVector3(dRight + (innerRight - dRight)/2, roomH/2, fZ))
+            pos: SCNVector3(dRight + (innerRight - dRight)/2, roomH/2, fZ), name: "wall")
         box(dW, roomH - dH, wT, color: wallColor,
-            pos: SCNVector3(dCx, dH + (roomH - dH)/2, fZ))
+            pos: SCNVector3(dCx, dH + (roomH - dH)/2, fZ), name: "wall")
 
         let frameColor = UIColor(red:0.42, green:0.28, blue:0.14, alpha:1)
         let faceZ = innerFront + 0.01
@@ -241,11 +253,11 @@ struct KostSceneView: UIViewRepresentable {
         let wLeft   = wCx - wW/2, wRight = wCx + wW/2
         let bZ = innerBack - wT/2
         box(wLeft - innerLeft, roomH, wT, color: wallColor,
-            pos: SCNVector3(innerLeft + (wLeft - innerLeft)/2, roomH/2, bZ))
+            pos: SCNVector3(innerLeft + (wLeft - innerLeft)/2, roomH/2, bZ), name: "wall")
         box(innerRight - wRight, roomH, wT, color: wallColor,
-            pos: SCNVector3(wRight + (innerRight - wRight)/2, roomH/2, bZ))
-        box(wW, wBottom, wT, color: wallColor, pos: SCNVector3(wCx, wBottom/2, bZ))
-        box(wW, roomH - wTop, wT, color: wallColor, pos: SCNVector3(wCx, wTop + (roomH - wTop)/2, bZ))
+            pos: SCNVector3(wRight + (innerRight - wRight)/2, roomH/2, bZ), name: "wall")
+        box(wW, wBottom, wT, color: wallColor, pos: SCNVector3(wCx, wBottom/2, bZ), name: "wall")
+        box(wW, roomH - wTop, wT, color: wallColor, pos: SCNVector3(wCx, wTop + (roomH - wTop)/2, bZ), name: "wall")
 
         let wFrameColor = UIColor(red:0.90, green:0.88, blue:0.82, alpha:1)
         let bFaceZ = innerBack - 0.01
@@ -343,6 +355,51 @@ struct KostSceneView: UIViewRepresentable {
         winLightNode.position = SCNVector3(wCx, wCy, innerBack + 0.5)
         scene.rootNode.addChildNode(winLightNode)
         vm.winLightNode = winLightNode
+
+        // ── Saklar lampu — dinding depan, kiri pintu ──
+        // Posisi: x = dLeft - 0.20, y = 1.25, z = innerFront (mepet dinding dalam)
+        let swX = dLeft - 0.20
+        let swY: Float = 1.25
+        let swZ = innerFront - 0.01  // sedikit masuk dari permukaan dinding
+
+        // Plat saklar (kuning gading)
+        let plateGeo = SCNBox(width: 0.09, height: 0.13, length: 0.015, chamferRadius: 0.008)
+        let plateMat = SCNMaterial()
+        plateMat.diffuse.contents  = UIColor(red:0.95, green:0.95, blue:0.88, alpha:1)
+        plateMat.lightingModel     = .phong
+        plateMat.specular.contents = UIColor(white:0.4, alpha:1)
+        plateGeo.materials = [plateMat]
+        let plateNode = SCNNode(geometry: plateGeo)
+        plateNode.position = SCNVector3(swX, swY, swZ)
+        plateNode.name = "lightSwitch"
+        scene.rootNode.addChildNode(plateNode)
+        vm.switchNode = plateNode
+
+        // Tombol saklar kecil di tengah plat
+        let btnGeo = SCNBox(width: 0.045, height: 0.065, length: 0.012, chamferRadius: 0.005)
+        let btnMat = SCNMaterial()
+        btnMat.diffuse.contents  = UIColor(red:0.90, green:0.88, blue:0.78, alpha:1)
+        btnMat.lightingModel     = .phong
+        btnGeo.materials = [btnMat]
+        let btnNode = SCNNode(geometry: btnGeo)
+        btnNode.position = SCNVector3(0, 0, 0.009)
+        plateNode.addChildNode(btnNode)
+
+        // Simpan posisi world saklar untuk proximity check
+        vm.switchWorldPos = SIMD3<Float>(swX, 0, swZ)
+
+        // ── Room light (lampu plafon) ──
+        let roomLight = SCNLight()
+        roomLight.type      = .omni
+        roomLight.color     = UIColor(red:1.0, green:0.95, blue:0.80, alpha:1)
+        roomLight.intensity = CGFloat(vm.roomBrightness) * 1200
+        roomLight.attenuationStartDistance = 1.0
+        roomLight.attenuationEndDistance   = 8.0
+        let roomLightNode = SCNNode()
+        roomLightNode.light    = roomLight
+        roomLightNode.position = SCNVector3(0, roomH - 0.2, 0)   // di plafon tengah ruangan
+        scene.rootNode.addChildNode(roomLightNode)
+        vm.roomLightNode = roomLightNode
 
         // Apply current time-of-day immediately so window isn't dark on first load
         DispatchQueue.main.async {

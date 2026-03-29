@@ -22,7 +22,7 @@ final class ClockPlayer {
         }
         if let p = try? AVAudioPlayer(data: asset.data, fileTypeHint: "mp3") {
             p.numberOfLoops = -1   // loop selamanya
-            p.volume = 0.2
+            p.volume = 0.09
             p.prepareToPlay()
             player = p
         }

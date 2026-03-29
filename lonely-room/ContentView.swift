@@ -12,7 +12,7 @@ struct SplashView: View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
             VStack(spacing: 16) {
-                Image(systemName: "house.fill")
+                Image(systemName: "house.fill") 
                     .font(.system(size: 64))
                     .foregroundStyle(.primary)
                 Text("Lonely Room")
@@ -27,7 +27,7 @@ struct SplashView: View {
                     scale = 1.0
                     opacity = 1.0
                 }
-            }
+            }  
         }
     }
 }
@@ -41,8 +41,8 @@ struct ContentView: View {
     @State private var moveDY: CGFloat   = 0
     @State private var camLastDragX: CGFloat = 0
 
-    @State private var showCatalog    = false
-    @State private var catalogWasOpen = false
+    @State private var showCatalog      = false
+    @State private var catalogWasOpen   = false
 
     @State private var currentTime = Date()
     @State private var lastTODHour = Calendar.current.component(.hour, from: Date())
@@ -177,7 +177,8 @@ struct ContentView: View {
                             vm.selectFurniture(nil)
                         }
                     })
-                    .padding(.horizontal, 24)
+                    .padding(.leading, 24)
+                    .padding(.trailing, 8)
                     .padding(.top, 72)
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
@@ -203,49 +204,115 @@ struct ContentView: View {
                             .onEnded { _ in camLastDragX = 0 }
                     )
             }
-            .allowsHitTesting(vm.pendingType == nil && vm.selectedFurniture == nil)
+            .allowsHitTesting(vm.pendingType == nil && vm.selectedFurniture == nil && !showCatalog)
 
             // ── Joystick (kiri bawah) + Tombol + (kanan bawah) ──
             VStack(spacing: 0) {
                 Spacer()
                 HStack(alignment: .bottom) {
                     // Joystick
-                    JoystickView(size: 130) { dx, dy in
-                        moveDX = dx; moveDY = dy
-                    } onEnd: {
-                        moveDX = 0; moveDY = 0
-                        vm.stopWalking()
+                    ZStack {
+                        JoystickView(size: 130) { dx, dy in
+                            moveDX = dx; moveDY = dy
+                        } onEnd: {
+                            moveDX = 0; moveDY = 0
+                            vm.stopWalking()
+                        }
+                        .opacity(vm.isLyingDown ? 0.35 : 1.0)
+                        .allowsHitTesting(!vm.isLyingDown)
                     }
                     .padding(.leading, 24)
 
                     Spacer()
 
-                    // Tombol buka/tutup catalog
-                    Button {
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                            showCatalog.toggle()
-                            if !showCatalog {
-                                vm.pendingType = nil
-                                vm.selectFurniture(nil)
+                    VStack(spacing: 10) {
+                        // Tombol Rebahan / Berdiri
+                        if vm.isNearBed || vm.isLyingDown {
+                            Button {
+                                if vm.isLyingDown {
+                                    vm.standUp()
+                                } else {
+                                    vm.layDown()
+                                }
+                            } label: {
+                                ZStack {
+                                    Capsule()
+                                        .fill(.ultraThinMaterial)
+                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
+                                        .frame(width: 110, height: 40)
+                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+                                    HStack(spacing: 6) {
+                                        Image(systemName: vm.isLyingDown ? "figure.stand" : "bed.double.fill")
+                                            .font(.system(size: 15, weight: .semibold))
+                                        Text(vm.isLyingDown ? "Berdiri" : "Rebahan")
+                                            .font(.system(size: 13, weight: .semibold))
+                                    }
+                                    .foregroundStyle(.white)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+
+                        // Tombol buka/tutup catalog
+                        Button {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                                showCatalog.toggle()
+                                if !showCatalog {
+                                    vm.pendingType = nil
+                                    vm.selectFurniture(nil)
+                                }
+                            }
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(.ultraThinMaterial)
+                                    .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
+                                    .frame(width: 58, height: 58)
+                                    .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+                                Image(systemName: showCatalog ? "xmark" : "plus")
+                                    .font(.system(size: 22, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .rotationEffect(.degrees(showCatalog ? 0 : 0))
                             }
                         }
-                    } label: {
-                        ZStack {
-                            Circle()
-                                .fill(.ultraThinMaterial)
-                                .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
-                                .frame(width: 58, height: 58)
-                                .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                            Image(systemName: showCatalog ? "xmark" : "plus")
-                                .font(.system(size: 22, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .rotationEffect(.degrees(showCatalog ? 0 : 0))
-                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                     .padding(.trailing, 24)
                 }
                 .padding(.bottom, 32)
+            }
+
+            // ── Panel Saklar Lampu ──
+            if vm.isNearSwitch && !vm.isLyingDown {
+                VStack(spacing: 0) {
+                    Spacer()
+                    HStack {
+                        LightSwitchPanel(vm: vm)
+                            .padding(.leading, 20)
+                            .padding(.bottom, 192)
+                        Spacer()
+                    }
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .allowsHitTesting(true)
+                .animation(.spring(response: 0.35, dampingFraction: 0.75), value: vm.isNearSwitch)
+            }
+
+            // ── Panel Musik — muncul saat dekat radio ──
+            if vm.isNearMusicPlayer && !vm.isLyingDown {
+                VStack(spacing: 0) {
+                    Spacer()
+                    HStack {
+                        MusicPlayerPanel()
+                            .padding(.leading, 20)
+                            .padding(.bottom, 192)
+                        Spacer()
+                    }
+                }
+                .transition(.move(edge: .leading).combined(with: .opacity))
+                .allowsHitTesting(true)
+                .animation(.spring(response: 0.35, dampingFraction: 0.75), value: vm.isNearMusicPlayer)
             }
         }
     }

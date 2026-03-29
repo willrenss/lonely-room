@@ -18,6 +18,7 @@ struct FurnitureCatalogView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
             }
+            .contentShape(Rectangle())
 
             // ── Close Button ──
             Divider()
@@ -32,8 +33,8 @@ struct FurnitureCatalogView: View {
             }
             .buttonStyle(.plain)
         }
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(Color.white.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 4)
     }
 }
@@ -44,7 +45,8 @@ private struct FurnitureTile: View {
     @ObservedObject var vm: KostViewModel
 
     private var isSelected: Bool { vm.pendingType == ft }
-    private var isOwned: Bool    { vm.hasItem(ofType: ft) }
+    /// Owned = sudah ada DAN tidak boleh multiple → tile disabled dengan checkmark
+    private var isOwned: Bool    { !ft.allowsMultiple && vm.hasItem(ofType: ft) }
 
     var body: some View {
         Button {

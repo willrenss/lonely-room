@@ -12,6 +12,7 @@ enum FurnitureType: String, CaseIterable {
     case lamp      = "Lampu"
     case bag       = "Tas"
     case wallClock = "Jam Dinding"
+    case musicPlayer = "Radio"
 
     var icon: String {
         switch self {
@@ -24,6 +25,7 @@ enum FurnitureType: String, CaseIterable {
         case .lamp:      return "lamp.floor.fill"
         case .bag:       return "bag.fill"
         case .wallClock: return "clock.fill"
+        case .musicPlayer: return "radio.fill"
         }
     }
 
@@ -38,6 +40,7 @@ enum FurnitureType: String, CaseIterable {
         case .lamp:      return Color(red:0.70, green:0.60, blue:0.20)
         case .bag:       return Color(red:0.15, green:0.15, blue:0.55)
         case .wallClock: return Color(red:0.45, green:0.28, blue:0.12)
+        case .musicPlayer: return Color(red:0.15, green:0.35, blue:0.55)
         }
     }
 
@@ -52,6 +55,7 @@ enum FurnitureType: String, CaseIterable {
         case .lamp:      return CGSize(width:0.3, height:0.3)
         case .bag:       return CGSize(width:0.4, height:0.2)
         case .wallClock: return CGSize(width:0.35, height:0.05) // tipis karena di dinding
+        case .musicPlayer: return CGSize(width:0.40, height:0.28)
         }
     }
 
@@ -67,11 +71,20 @@ enum FurnitureType: String, CaseIterable {
         case .lamp:      return 0.04
         case .bag:       return 0.28
         case .wallClock: return 0.0
+        case .musicPlayer: return 0.32
         }
     }
 
     /// Wall-mounted items need special placement logic.
     var isWallMounted: Bool { self == .wallClock }
+
+    /// Items yang boleh ditaruh lebih dari satu instance di ruangan.
+    var allowsMultiple: Bool {
+        switch self {
+        case .lamp, .plant, .rug, .bag, .wallClock, .musicPlayer: return true
+        default: return false
+        }
+    }
 
     /// Footprint area (width * depth) used to compare sizes for stacking eligibility.
     var stackSize: Float {
@@ -82,7 +95,7 @@ enum FurnitureType: String, CaseIterable {
     /// (self must be larger and must be a surface-type item).
     func canStack(_ other: FurnitureType) -> Bool {
         // Wall-mounted, rug, lamp, tv cannot be bases for stacking
-        guard self != .rug, self != .lamp, self != .tv, self != .wallClock else { return false }
+        guard self != .rug, self != .lamp, self != .tv, self != .wallClock, self != .musicPlayer else { return false }
         guard !other.isWallMounted else { return false }
         return stackSize > other.stackSize
     }
@@ -94,6 +107,8 @@ struct FurnitureItem {
     let type: FurnitureType
     var position: SCNVector3
     var node: SCNNode
+    /// UUID asli dari save data (untuk restore relasi stacking saat load)
+    var savedID: UUID? = nil
     /// ID of the item this is stacked on top of (nil = on the floor).
     var stackedOnID: UUID? = nil
     /// ID of the item sitting on top of this one (nil = nothing stacked).

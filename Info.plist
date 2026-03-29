@@ -18,6 +18,8 @@
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Digunakan untuk menampilkan cuaca sesuai lokasi kamu saat ini.</string>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Lonely Room butuh akses ke library musik kamu untuk memutar lagu di radio kamar.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

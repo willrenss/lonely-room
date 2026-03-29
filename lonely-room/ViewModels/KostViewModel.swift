@@ -10,19 +10,26 @@ class KostViewModel: ObservableObject {
     var yaw: Float     = 0
     var charFacing: Float = 0
     let speed: Float   = 0.06
-    // Boundary karakter: hampir seluruh ruangan (roomW=5.6, roomD=3.6, wT=0.18, margin 0.25)
-    let minX: Float    = -2.5, maxX: Float =  2.5
-    let minZ: Float    = -1.5, maxZ: Float =  1.5
-
+    // Dinding inner: X ±2.8, Z ±1.8. Kamera ideal di belakang 2m.
+    // Karakter dibatasi lebih ketat agar kamera tidak pernah menyentuh dinding.
+    let minX: Float    = -2.0, maxX: Float =  2.0
+    let minZ: Float    = -1.0, maxZ: Float =  1.0
+    
     @Published var isWalking         = false
+    @Published var isNearBed         = false
+    @Published var isLyingDown       = false
+    @Published var isNearSwitch      = false
+    @Published var isLightOn         = true
+    @Published var roomBrightness: Float = 0.85
+    @Published var isNearMusicPlayer = false
     @Published var furnitureItems: [FurnitureItem] = []
     @Published var selectedFurniture: FurnitureItem?
     @Published var pendingType: FurnitureType? = nil
     @Published var weather: WeatherCondition?
     @Published var pendingStackSource: FurnitureItem? = nil
-
+    
     var onSelectionChanged: ((FurnitureItem?) -> Void)?
-
+    
     weak var scnView:          SCNView?
     weak var sceneRoot:        SCNNode?
     weak var glassNode:        SCNNode?
@@ -30,35 +37,38 @@ class KostViewModel: ObservableObject {
     weak var winLightNode:     SCNNode?
     weak var outsideNode:      SCNNode?
     weak var rainParticleNode: SCNNode?
-
+    weak var roomLightNode:    SCNNode?
+    weak var switchNode:       SCNNode?
+    var switchWorldPos: SIMD3<Float> = .zero
+    
     var rainDisplayLink: CADisplayLink?
     var rainTimeOffset: Double = 0
     var lastRainTimestamp: Double = 0
-
+    
     // leg pivot nodes untuk animasi berjalan
     var legLPivot: SCNNode?
     var legRPivot: SCNNode?
     var armLPivot: SCNNode?
     var armRPivot: SCNNode?
-
+    
     init() {
         let cam = SCNCamera()
-        cam.zNear = 0.05; cam.zFar = 100; cam.fieldOfView = 60
+        cam.zNear = 0.15; cam.zFar = 100; cam.fieldOfView = 60
         cameraNode.camera = cam
-
+        
         // cameraNode di belakang karakter (+Z lokal = belakang saat yaw=0)
         // Jarak 2.0m, tinggi 1.1m, nunduk sedikit
         cameraNode.position    = SCNVector3(0, 1.1, 2.0)
         cameraNode.eulerAngles = SCNVector3(-0.15, 0, 0)
         cameraPivot.addChildNode(cameraNode)
-
+        
         characterNode.position = SCNVector3(0, 0, 0)
         charFacing = 0
         yaw = 0
         cameraPivot.position      = SCNVector3(0, 0, 0)
         cameraPivot.eulerAngles.y = 0
     }
-
+    
     // MARK: - TPP Camera
     func updateCameraForTPP() {
         cameraPivot.position = SCNVector3(
@@ -68,80 +78,101 @@ class KostViewModel: ObservableObject {
         )
         clampCameraAgainstWalls()
     }
-
+    
     /// Ideal camera distance from pivot (in local Z)
     private let idealCameraZ: Float = 2.0
     /// Minimum camera distance (so it doesn't clip into character)
     private let minCameraZ:   Float = 0.3
-
+    
     /// Ray-cast from character's head toward the ideal camera position.
     /// If a wall is in the way, pull the camera in to just in front of it.
     func clampCameraAgainstWalls() {
         guard let root = sceneRoot else { return }
-
-        // Head position in world space (eye level ~1.1m)
-        let charPos = characterNode.worldPosition
-        let headPos = SCNVector3(charPos.x, charPos.y + 1.1, charPos.z)
-
-        // Ideal camera world position — same transform as cameraPivot + cameraNode offset
-        let idealCamPos = cameraNode.worldPosition
-
-        // Direction from head to ideal camera
+        
+        // Head position in world space.
+        // Saat berdiri: charPos.y ≈ 0, kepala di +1.1.
+        // Saat rebahan: charPos.y ≈ 0.42 (kasur), tubuh flat, kepala hanya +0.15 di atasnya.
+        let charPos  = characterNode.worldPosition
+        let headOffY: Float = isLyingDown ? 0.15 : 1.1
+        let headPos  = SCNVector3(charPos.x, charPos.y + headOffY, charPos.z)
+        
+        // Compute IDEAL camera world position from pivot yaw + current local Y/Z offsets.
+        // Must NOT use cameraNode.worldPosition (may already be clamped).
+        let pivotYaw  = Float(cameraPivot.eulerAngles.y)
+        let localCamZ = idealCameraZ
+        let localCamY = Float(cameraNode.position.y)   // 1.1 normal, 2.8 saat rebahan
+        let worldCamX = charPos.x + sin(pivotYaw) * localCamZ
+        let worldCamY = charPos.y + localCamY
+        let worldCamZ = charPos.z + cos(pivotYaw) * localCamZ
+        let idealCamPos = SCNVector3(worldCamX, worldCamY, worldCamZ)
+        
         let dx = idealCamPos.x - headPos.x
         let dy = idealCamPos.y - headPos.y
         let dz = idealCamPos.z - headPos.z
         let dist = sqrt(dx*dx + dy*dy + dz*dz)
         guard dist > 0.001 else { return }
-
-        // SceneKit ray-cast options: only hit back-faces of wall geometry (opaque, named)
+        
+        // Ray-cast — hanya peduli node bernama "wall"
         let options: [String: Any] = [
-            SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.closest.rawValue,
+            SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.all.rawValue,
             SCNHitTestOption.ignoreHiddenNodes.rawValue: true,
             SCNHitTestOption.backFaceCulling.rawValue: false
         ]
-
+        
         let hits = root.hitTestWithSegment(from: headPos, to: idealCamPos, options: options)
-
-        // Filter out character & camera nodes, and non-wall geometry (furniture, floor)
+        
         let wallHit = hits.first { hit in
-            // Walk up node hierarchy to skip character and camera pivot subtrees
             var n: SCNNode? = hit.node
             while let node = n {
-                if node === characterNode || node === cameraPivot { return false }
+                if node.name == "wall" { return true }
                 n = node.parent
             }
-            // Only consider nodes that look like walls/ceiling (have a box geometry with no name
-            // matching furniture or floor)
-            let name = hit.node.name ?? ""
-            if name == "floor" { return false }
-            return true
+            return false
         }
-
+        
+        let targetZ: Float
         if let hit = wallHit {
-            // Distance from head to wall hit
             let hx = hit.worldCoordinates.x - headPos.x
             let hy = hit.worldCoordinates.y - headPos.y
             let hz = hit.worldCoordinates.z - headPos.z
             let hitDist = sqrt(hx*hx + hy*hy + hz*hz)
-
-            // Pull back a tiny margin (0.1m) so camera doesn't poke through
-            let clampedDist = max(minCameraZ, hitDist - 0.12)
-            // Express as local Z in cameraPivot space
-            let ratio = clampedDist / dist
-            // New local Z for cameraNode (it's always at (0, 1.1, idealCameraZ) in pivot space)
-            let newLocalZ = idealCameraZ * ratio
-            cameraNode.position.z = newLocalZ
+            // margin 0.30m agar kamera tidak pernah menyentuh dinding
+            let clampedDist = max(minCameraZ, hitDist - 0.30)
+            targetZ = idealCameraZ * (clampedDist / dist)
         } else {
-            // No wall — restore to ideal distance smoothly
-            if cameraNode.position.z != idealCameraZ {
-                cameraNode.position.z = idealCameraZ
-            }
+            targetZ = idealCameraZ
+        }
+        
+        // Langsung snap saat kamera perlu mundur (mendekati dinding), smooth saat kembali
+        let current = cameraNode.position.z
+        let alpha: Float = targetZ < current ? 1.0 : 0.15
+        let newZ = current + (targetZ - current) * alpha
+        cameraNode.position.z = newZ
+        
+        // ── Hard clamp: pastikan posisi WORLD kamera tidak menembus dinding apapun ──
+        // Dinding inner: X ∈ [-2.8, 2.8], Z ∈ [-1.8, 1.8], margin kamera 0.25m
+        let camMargin: Float = 0.25
+        let camWorldX = charPos.x + sin(pivotYaw) * newZ
+        let camWorldZ = charPos.z + cos(pivotYaw) * newZ
+        let clampedCamX = max(-2.8 + camMargin, min(2.8 - camMargin, camWorldX))
+        let clampedCamZ = max(-1.8 + camMargin, min(1.8 - camMargin, camWorldZ))
+        
+        // Jika hard clamp memotong posisi kamera, kurangi jarak Z kamera
+        if clampedCamX != camWorldX || clampedCamZ != camWorldZ {
+            // Hitung jarak yang aman berdasarkan posisi ter-clamp
+            let dcx = clampedCamX - charPos.x
+            let dcz = clampedCamZ - charPos.z
+            let safeDist = sqrt(dcx*dcx + dcz*dcz)
+            // Proyeksikan ke arah kamera (pivot Z)
+            let safeZ = max(minCameraZ, safeDist)
+            cameraNode.position.z = min(newZ, safeZ)
         }
     }
-
+    
     // MARK: - Movement
-
+    
     func move(dx: Float, dy: Float) {
+        guard !isLyingDown else { return }
         // Kamera ada di posisi (sin(yaw)*Z, 1.1, cos(yaw)*Z) relatif pivot.
         // "Maju" (dy+) = bergerak menjauh dari kamera = arah berlawanan dari kamera
         // forward = (-sin(yaw), 0, -cos(yaw))
@@ -151,10 +182,10 @@ class KostViewModel: ObservableObject {
         let fwdZ = -cos(camYaw) * dy * speed
         let strX =  cos(camYaw) * dx * speed
         let strZ = -sin(camYaw) * dx * speed
-
+        
         let newX = Float(characterNode.position.x) + fwdX + strX
         let newZ = Float(characterNode.position.z) + fwdZ + strZ
-
+        
         let moving = abs(dx) > 0.05 || abs(dy) > 0.05
         if isWalking != moving {
             isWalking = moving
@@ -166,13 +197,18 @@ class KostViewModel: ObservableObject {
                 stopWalkAnimation()
             }
         }
-
+        
         let clampedX = SCNFloat(max(minX, min(maxX, newX)))
         let clampedZ = SCNFloat(max(minZ, min(maxZ, newZ)))
         characterNode.position.x = clampedX
         characterNode.position.z = clampedZ
         characterNode.position.y = 0
-
+        
+        // Cek apakah dekat kasur / saklar
+        checkNearBed()
+        checkNearSwitch()
+        checkNearMusicPlayer()
+        
         // Karakter smooth rotate ke arah gerak
         if abs(fwdX + strX) > 0.001 || abs(fwdZ + strZ) > 0.001 {
             let targetFacing = atan2(fwdX + strX, -(fwdZ + strZ))
@@ -182,37 +218,193 @@ class KostViewModel: ObservableObject {
             charFacing += diff * 0.25
             characterNode.eulerAngles.y = SCNFloat(charFacing)
         }
-
+        
         // CameraPivot selalu ikut posisi karakter
         updateCameraForTPP()
     }
-
+    
     func stopWalking() {
         guard isWalking else { return }
         isWalking = false
         FootstepPlayer.shared.stop()
         stopWalkAnimation()
     }
-
+    
+    // MARK: - Bed Proximity & Lie Down
+    
+    func checkNearBed() {
+        guard !isLyingDown else { return }
+        let bedItem = furnitureItems.first(where: { $0.type == .bed })
+        guard let bed = bedItem else { isNearBed = false; return }
+        let cx = Float(characterNode.position.x)
+        let cz = Float(characterNode.position.z)
+        let bx = Float(bed.node.position.x)
+        let bz = Float(bed.node.position.z)
+        let dist = sqrt((cx - bx) * (cx - bx) + (cz - bz) * (cz - bz))
+        isNearBed = dist < 1.2
+    }
+    
+    func layDown() {
+        guard !isLyingDown, let bed = furnitureItems.first(where: { $0.type == .bed }) else { return }
+        isLyingDown = true
+        isNearBed   = false
+        stopWalking()
+        
+        let bedNode = bed.node
+        let bedYaw  = Float(bedNode.eulerAngles.y)
+        let bx = Float(bedNode.position.x)
+        let bz = Float(bedNode.position.z)
+        
+        // ── Posisi bantal dalam world space ──
+        // Bantal di local (0, 0, -0.75). SceneKit Y-rotation transform:
+        //   wx = bx + sin(yaw)*0.75
+        //   wz = bz - cos(yaw)*0.75
+        //
+        // Kaki (origin node) diletakkan di posisi bantal.
+        // eulerAngles.x = +π/2 → muka ke atas.
+        // Local +Y (kepala) → world dir = (sin(Y), 0, -cos(Y))
+        // Kepala extend ke arah kaki kasur = local +Z kasur = (-sin(yaw), 0, cos(yaw))
+        //   → Y = yaw + π
+        let pillowWorldX = bx + sin(bedYaw) * 0.75
+        let pillowWorldZ = bz - cos(bedYaw) * 0.75
+        let lyingFacing: Float = bedYaw + .pi
+        let mattressTopY: Float = 0.44
+        
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.7
+        SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        characterNode.position    = SCNVector3(pillowWorldX, mattressTopY, pillowWorldZ)
+        characterNode.eulerAngles = SCNVector3(.pi / 2, lyingFacing, 0)
+        charFacing = lyingFacing
+        SCNTransaction.commit()
+        
+        // Kamera bird-eye dari atas kasur
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.7
+        cameraNode.position    = SCNVector3(0, 2.8, 1.4)
+        cameraNode.eulerAngles = SCNVector3(-0.60, 0, 0)
+        SCNTransaction.commit()
+        
+        updateCameraForTPP()
+    }
+    
+    func standUp() {
+        guard isLyingDown else { return }
+        isLyingDown = false
+        
+        // Geser karakter ke sisi kasur (arah local +X kasur = lebar) supaya tidak berdiri di dalam kasur
+        if let bed = furnitureItems.first(where: { $0.type == .bed }) {
+            let bedYaw = Float(bed.node.eulerAngles.y)
+            let bx = Float(bed.node.position.x)
+            let bz = Float(bed.node.position.z)
+            // Sisi kasur arah local +X → world: (cos(bedYaw), 0, sin(bedYaw)) * 0.75
+            let sideX = bx + cos(bedYaw) * 0.75
+            let sideZ = bz + sin(bedYaw) * 0.75
+            
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.5
+            SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            characterNode.position    = SCNVector3(sideX, 0, sideZ)
+            characterNode.eulerAngles = SCNVector3(0, charFacing, 0)
+            SCNTransaction.commit()
+        } else {
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.5
+            SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            characterNode.position.y  = 0
+            characterNode.eulerAngles = SCNVector3(0, charFacing, 0)
+            SCNTransaction.commit()
+        }
+        
+        // Kembalikan posisi & sudut kamera normal
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.5
+        cameraNode.position    = SCNVector3(0, 1.1, 2.0)
+        cameraNode.eulerAngles = SCNVector3(-0.15, 0, 0)
+        SCNTransaction.commit()
+        
+        updateCameraForTPP()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.checkNearBed(); self.checkNearSwitch(); self.checkNearMusicPlayer() }
+    }
+    
+    // MARK: - Music Player Proximity
+    
+    func checkNearMusicPlayer() {
+        let cx = Float(characterNode.position.x)
+        let cz = Float(characterNode.position.z)
+        let item = furnitureItems.first(where: { $0.type == .musicPlayer })
+        guard let mp = item else { isNearMusicPlayer = false; return }
+        let dx = cx - Float(mp.node.position.x)
+        let dz = cz - Float(mp.node.position.z)
+        isNearMusicPlayer = sqrt(dx*dx + dz*dz) < 1.2
+    }
+    
+    // MARK: - Light Switch
+    
+    func checkNearSwitch() {
+        let cx = Float(characterNode.position.x)
+        let cz = Float(characterNode.position.z)
+        let dx = cx - switchWorldPos.x
+        let dz = cz - switchWorldPos.z
+        isNearSwitch = sqrt(dx*dx + dz*dz) < 1.2
+    }
+    
+    func toggleLight() {
+        isLightOn.toggle()
+        applyRoomLight()
+        // Visual feedback: saklar berubah warna
+        if let sw = switchNode, let mat = sw.geometry?.firstMaterial {
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.2
+            mat.diffuse.contents = isLightOn
+            ? UIColor(red:0.95, green:0.95, blue:0.88, alpha:1)
+            : UIColor(red:0.30, green:0.30, blue:0.30, alpha:1)
+            mat.emission.contents = isLightOn
+            ? UIColor(red:1.0, green:0.97, blue:0.80, alpha:0.6)
+            : UIColor.black
+            SCNTransaction.commit()
+        }
+    }
+    
+    func setBrightness(_ value: Float) {
+        roomBrightness = max(0.05, min(1.0, value))
+        if isLightOn { applyRoomLight() }
+    }
+    
+    func applyRoomLight() {
+        guard let light = roomLightNode?.light else { return }
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.3
+        if isLightOn {
+            light.intensity = CGFloat(roomBrightness) * 1200
+            light.color     = UIColor(red: 1.0, green: 0.95, blue: 0.80, alpha: 1)
+        } else {
+            light.intensity = 0
+        }
+        SCNTransaction.commit()
+    }
+    
     // MARK: - Walk Animation
-
+    
+    
     func startWalkAnimation() {
         let stepAngle: CGFloat = 0.45
         let duration: TimeInterval = 0.32
-
+        
         func swing(_ node: SCNNode?, fwd: Bool) {
             guard let n = node else { return }
             let a = SCNAction.rotateTo(x: fwd ? stepAngle : -stepAngle, y: 0, z: 0, duration: duration, usesShortestUnitArc: true)
             let b = SCNAction.rotateTo(x: fwd ? -stepAngle : stepAngle, y: 0, z: 0, duration: duration, usesShortestUnitArc: true)
             n.runAction(.repeatForever(.sequence([a, b])), forKey: "walk")
         }
-
+        
         swing(legLPivot, fwd: true)
         swing(legRPivot, fwd: false)
         swing(armLPivot, fwd: false)  // lengan berlawanan dengan kaki
         swing(armRPivot, fwd: true)
     }
-
+    
     func stopWalkAnimation() {
         [legLPivot, legRPivot, armLPivot, armRPivot].forEach { node in
             guard let n = node else { return }
@@ -223,24 +415,42 @@ class KostViewModel: ObservableObject {
             SCNTransaction.commit()
         }
     }
-
+    
     func rotateCamera(by delta: Float) {
         yaw += delta
         cameraPivot.eulerAngles.y = SCNFloat(yaw)
         clampCameraAgainstWalls()
     }
+    // MARK: - Persistence
+    
+    func saveFurniture() {
+        let data = furnitureItems.map { item in
+            FurnitureSaveData(
+                id:            item.id.uuidString,
+                type:          item.type.rawValue,
+                x:             Float(item.node.position.x),
+                y:             Float(item.node.position.y),
+                z:             Float(item.node.position.z),
+                yaw:           Float(item.node.eulerAngles.y),
+                stackedOnID:   item.stackedOnID?.uuidString,
+                stackedItemID: item.stackedItemID?.uuidString
+            )
+        }
+        FurniturePersistence.save(data)
+    }
+    
     // MARK: - Furniture Placement
-
+    
     func hasItem(ofType type: FurnitureType) -> Bool {
         furnitureItems.contains { $0.type == type }
     }
 
     func startPlacing(type: FurnitureType) {
-        guard !hasItem(ofType: type) else { return }
+        guard type.allowsMultiple || !hasItem(ofType: type) else { return }
         selectFurniture(nil)
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { pendingType = type }
     }
-
+    
     /// Place a wall-mounted item. Called from the coordinator when user taps on a wall surface.
     func placeWallFurniture(type: FurnitureType, position: SCNVector3, yaw: Float) {
         guard let root = sceneRoot else { return }
@@ -252,13 +462,14 @@ class KostViewModel: ObservableObject {
         furnitureItems.append(item)
         if type == .wallClock { ClockPlayer.shared.start() }
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { pendingType = nil }
+        saveFurniture()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.selectFurniture(item) }
     }
-
+    
     func placeFurniture(at worldPos: SCNVector3) {
         guard let type = pendingType, let root = sceneRoot else { return }
         if type.isWallMounted { return }
-
+        
         // Stack onto existing furniture
         if let baseIdx = furnitureItems.indices.first(where: { i in
             let base = furnitureItems[i]
@@ -267,7 +478,7 @@ class KostViewModel: ObservableObject {
             let dx = abs(Float(worldPos.x) - Float(base.node.position.x))
             let dz = abs(Float(worldPos.z) - Float(base.node.position.z))
             return dx < Float(base.type.footprint.width  / 2) &&
-                   dz < Float(base.type.footprint.height / 2)
+            dz < Float(base.type.footprint.height / 2)
         }) {
             let base = furnitureItems[baseIdx]
             let node = buildFurnitureNode(type: type)
@@ -280,10 +491,11 @@ class KostViewModel: ObservableObject {
             furnitureItems[baseIdx].stackedItemID = item.id
             furnitureItems.append(item)
             withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { pendingType = nil }
+            saveFurniture()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.selectFurniture(item) }
             return
         }
-
+        
         // Normal floor placement
         let node = buildFurnitureNode(type: type)
         node.position = SCNVector3(max(-2.5, min(2.5, worldPos.x)), 0, max(-1.5, min(1.5, worldPos.z)))
@@ -291,9 +503,10 @@ class KostViewModel: ObservableObject {
         let item = FurnitureItem(type: type, position: node.position, node: node)
         furnitureItems.append(item)
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { pendingType = nil }
+        saveFurniture()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.selectFurniture(item) }
     }
-
+    
     func selectFurniture(_ item: FurnitureItem?) {
         selectedFurniture?.node.childNodes
             .filter { $0.name == "sel_outline" }
@@ -315,7 +528,7 @@ class KostViewModel: ObservableObject {
         outline.position = SCNVector3(0, 0.02, 0)
         item.node.addChildNode(outline)
     }
-
+    
     func moveFurniture(_ item: FurnitureItem, to worldPos: SCNVector3) {
         guard item.stackedOnID == nil else { return }
         let clampedX = max(-2.5, min(2.5, Float(worldPos.x)))
@@ -331,8 +544,9 @@ class KostViewModel: ObservableObject {
                 furnitureItems[childIdx].position = furnitureItems[childIdx].node.position
             }
         }
+        // Save dilakukan saat gesture ended, bukan setiap frame
     }
-
+    
     func deleteSelected() {
         guard let item = selectedFurniture else { return }
         if let childID = item.stackedItemID,
@@ -351,13 +565,15 @@ class KostViewModel: ObservableObject {
         if wasClockItem && !furnitureItems.contains(where: { $0.type == .wallClock }) {
             ClockPlayer.shared.stop()
         }
+        saveFurniture()
     }
-
+    
     func rotateSelected(by angle: Float) {
         guard let item = selectedFurniture else { return }
         item.node.eulerAngles.y += SCNFloat(angle)
+        saveFurniture()
     }
-
+    
     func moveSelected(dx: Float, dz: Float) {
         guard let item = selectedFurniture, item.stackedOnID == nil else { return }
         if item.type.isWallMounted {
@@ -387,17 +603,17 @@ class KostViewModel: ObservableObject {
             }
         }
     }
-
+    
     // MARK: - Stacking
-
+    
     func startStacking() {
         guard let item = selectedFurniture else { return }
         pendingStackSource = item
         selectFurniture(nil)
     }
-
+    
     func cancelStacking() { pendingStackSource = nil }
-
+    
     @discardableResult
     func stackItemOnto(_ base: FurnitureItem) -> Bool {
         guard let source = pendingStackSource else { return false }
@@ -418,16 +634,17 @@ class KostViewModel: ObservableObject {
         furnitureItems[sourceIdx].stackedOnID = base.id
         furnitureItems[baseIdx].stackedItemID = source.id
         pendingStackSource = nil
+        saveFurniture()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             self.selectFurniture(self.furnitureItems[sourceIdx])
         }
         return true
     }
-
+    
     // MARK: - Hit Testing
-
+    
     func hitTestFloor(at point: CGPoint) -> SCNVector3? { hitTestPlane(at: point, y: 0) }
-
+    
     /// Unproject screen point onto a horizontal plane at world Y = `planeY`.
     func hitTestPlane(at point: CGPoint, y planeY: Float) -> SCNVector3? {
         guard let scnView = scnView else { return nil }
@@ -441,7 +658,7 @@ class KostViewModel: ObservableObject {
         guard t > 0 else { return nil }
         return SCNVector3(Float(near.x) + dirX * t, planeY, Float(near.z) + dirZ * t)
     }
-
+    
     /// Ray-cast to the nearest wall surface for wall-clock placement.
     func hitTestWall(at point: CGPoint) -> (position: SCNVector3, yaw: Float)? {
         guard let scnView = scnView else { return nil }
@@ -451,20 +668,20 @@ class KostViewModel: ObservableObject {
         let dirX  = Float(far.x) - nearX
         _  = Float(far.y) - nearY
         let dirZ  = Float(far.z) - nearZ
-
+        
         let wallY: Float = 1.65
         let off: Float = 0.03
         let xMin: Float = -2.8, xMax: Float = 2.8
         let zMin: Float = -1.8, zMax: Float = 1.8
-
+        
         var bestT = Float.greatestFiniteMagnitude
         var bestPos = SCNVector3Zero
         var bestYaw: Float = 0
-
+        
         func tryWall(t: Float, pos: SCNVector3, yaw: Float) {
             if t > 0 && t < bestT { bestT = t; bestPos = pos; bestYaw = yaw }
         }
-
+        
         if abs(dirX) > 1e-6 {
             let tL = (xMin + off - nearX) / dirX
             let zL = nearZ + dirZ * tL
@@ -484,7 +701,7 @@ class KostViewModel: ObservableObject {
         guard bestT < Float.greatestFiniteMagnitude else { return nil }
         return (bestPos, bestYaw)
     }
-
+    
     func hitTestFurniture(at point: CGPoint) -> FurnitureItem? {
         guard let scnView = scnView else { return nil }
         let hits = scnView.hitTest(point, options: [
@@ -504,13 +721,13 @@ class KostViewModel: ObservableObject {
         }
         return nil
     }
-
+    
     // MARK: - Weather
-
+    
     func applyWeather(_ w: WeatherCondition) {
         applyWeather(w, timeOfDay: TimeOfDay.from(hour: Calendar.current.component(.hour, from: Date())))
     }
-
+    
     func applyWeather(_ w: WeatherCondition, timeOfDay tod: TimeOfDay) {
         let effective = w.applying(timeOfDay: tod)
         weather = effective
@@ -523,8 +740,8 @@ class KostViewModel: ObservableObject {
         ambientNode?.light?.intensity = effective.isDay ? 1000 : 600
         ambientNode?.light?.color     = UIColor(white: effective.ambientIntensity, alpha: 1)
         winLightNode?.light?.intensity = effective.code == 0 && effective.isDay ? 1200 :
-                                         effective.code <= 2 && effective.isDay ? 900 :
-                                         effective.isDay ? 600 : 300
+        effective.code <= 2 && effective.isDay ? 900 :
+        effective.isDay ? 600 : 300
         let isRain  = [51,53,55,61,63,65,80,81,82,95,96,99].contains(effective.code)
         let isHeavy = [65,80,81,82,95,96,99].contains(effective.code)
         let isStorm = [95,96,99].contains(effective.code)
@@ -536,39 +753,39 @@ class KostViewModel: ObservableObject {
             stopRainAnimation()
             if let mat = outsideNode?.geometry?.firstMaterial {
                 let tex = WeatherTextureRenderer.draw(condition: effective,
-                                                     size: CGSize(width: 512, height: 320),
-                                                     timeOfDay: tod)
+                                                      size: CGSize(width: 512, height: 320),
+                                                      timeOfDay: tod)
                 SCNTransaction.begin(); SCNTransaction.animationDuration = 2.0
                 mat.diffuse.contents = tex; SCNTransaction.commit()
             }
         }
     }
-
+    
     func applyTimeOfDay() {
         let hour = Calendar.current.component(.hour, from: Date())
         let tod  = TimeOfDay.from(hour: hour)
         let base = weather ?? WeatherCondition(code: 0, isDay: tod.isDay, tempC: 30)
         applyWeather(base, timeOfDay: tod)
     }
-
+    
     // MARK: - Rain Animation
-
+    
     func startRainAnimation(heavy: Bool, storm: Bool, timeOfDay: TimeOfDay, condition: WeatherCondition) {
         stopRainAnimation()
         lastRainTimestamp = CACurrentMediaTime()
         let link = CADisplayLink(target: RainAnimationTarget(vm: self, heavy: heavy, storm: storm,
-                                                              timeOfDay: timeOfDay, condition: condition),
+                                                             timeOfDay: timeOfDay, condition: condition),
                                  selector: #selector(RainAnimationTarget.tick(_:)))
         link.add(to: .main, forMode: .common)
         rainDisplayLink = link
     }
-
+    
     func stopRainAnimation() {
         rainDisplayLink?.invalidate(); rainDisplayLink = nil; rainTimeOffset = 0
     }
-
+    
     // MARK: - Rain Particle System
-
+    
     func makeRainParticleSystem(heavy: Bool = true) -> SCNParticleSystem {
         let ps = SCNParticleSystem()
         ps.particleSize = 0.008; ps.particleSizeVariation = 0.003
@@ -584,12 +801,85 @@ class KostViewModel: ObservableObject {
         ps.blendMode = .additive; ps.orientationMode = .free; ps.stretchFactor = 0.10
         return ps
     }
-
+    
     // MARK: - Default Furniture Layout + Character Spawn
-
+    
     func spawnDefaultFurniture() {
         guard let root = sceneRoot else { return }
 
+        // ── Migrasi save lama ──
+        FurniturePersistence.migrateIfNeeded()
+
+        // ── Load dari save jika ada ──
+        if let saved = FurniturePersistence.load() {
+            loadSavedFurniture(saved, into: root)
+        } else {
+            spawnHardcodedLayout(into: root)
+        }
+        // Selalu save setelah spawn/load agar state terkini tersimpan
+        saveFurniture()
+        
+        // ── Spawn karakter ──
+        isLyingDown = false   // selalu mulai dalam posisi berdiri
+        isNearBed   = false
+        characterNode.position    = SCNVector3(0, 0, 0)
+        characterNode.eulerAngles = SCNVector3(0, 0, 0)
+        charFacing = 0
+        let charNode = buildCharacterNode()
+        characterNode.addChildNode(charNode)
+        root.addChildNode(characterNode)
+        
+        cameraPivot.eulerAngles.y = SCNFloat(yaw)
+        cameraNode.position    = SCNVector3(0, 1.1, 2.0)
+        cameraNode.eulerAngles = SCNVector3(-0.15, 0, 0)
+        root.addChildNode(cameraPivot)
+        updateCameraForTPP()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.checkNearBed(); self.checkNearSwitch(); self.checkNearMusicPlayer() }
+    }
+    
+    // MARK: - Load Saved Layout
+    
+    private func loadSavedFurniture(_ saved: [FurnitureSaveData], into root: SCNNode) {
+        // Pass 1: buat semua node dengan UUID yang sama persis agar relasi stacking bisa di-restore
+        var uuidMap: [String: FurnitureItem] = [:]   // savedID → FurnitureItem
+        
+        // Item tanpa stackedOnID (base / standalone) dulu
+        let bases  = saved.filter { $0.stackedOnID == nil }
+        let stacked = saved.filter { $0.stackedOnID != nil }
+        
+        for data in bases {
+            guard let type = FurnitureType(rawValue: data.type) else { continue }
+            let node = buildFurnitureNode(type: type)
+            node.position = SCNVector3(data.x, data.y, data.z)
+            node.eulerAngles.y = SCNFloat(data.yaw)
+            root.addChildNode(node)
+            let item = FurnitureItem(type: type, position: node.position, node: node, savedID: UUID(uuidString: data.id))
+            uuidMap[data.id] = item
+            furnitureItems.append(item)
+            if type == .wallClock { ClockPlayer.shared.start() }
+        }
+        
+        // Pass 2: item yang di-stack di atas item lain
+        for data in stacked {
+            guard let type = FurnitureType(rawValue: data.type),
+                  let parentID = data.stackedOnID,
+                  let parentIdx = furnitureItems.firstIndex(where: { $0.savedID?.uuidString == parentID })
+            else { continue }
+            
+            let node = buildFurnitureNode(type: type)
+            node.position = SCNVector3(data.x, data.y, data.z)
+            node.eulerAngles.y = SCNFloat(data.yaw)
+            root.addChildNode(node)
+            var item = FurnitureItem(type: type, position: node.position, node: node, savedID: UUID(uuidString: data.id))
+            item.stackedOnID = furnitureItems[parentIdx].id
+            furnitureItems[parentIdx].stackedItemID = item.id
+            furnitureItems.append(item)
+        }
+    }
+    
+    // MARK: - Default Hardcoded Layout
+    
+    private func spawnHardcodedLayout(into root: SCNNode) {
         func spawnFloor(type: FurnitureType, x: Float, z: Float, yaw: Float = 0) {
             let node = buildFurnitureNode(type: type)
             node.position = SCNVector3(x, 0, z)
@@ -598,7 +888,7 @@ class KostViewModel: ObservableObject {
             let item = FurnitureItem(type: type, position: node.position, node: node)
             furnitureItems.append(item)
         }
-
+        
         func spawnWall(type: FurnitureType, x: Float, z: Float, yaw: Float) {
             let node = buildFurnitureNode(type: type)
             node.position = SCNVector3(x, 1.65, z)
@@ -608,7 +898,7 @@ class KostViewModel: ObservableObject {
             furnitureItems.append(item)
             if type == .wallClock { ClockPlayer.shared.start() }
         }
-
+        
         func spawnStacked(type: FurnitureType, on baseIdx: Int) {
             let base = furnitureItems[baseIdx]
             let node = buildFurnitureNode(type: type)
@@ -620,64 +910,46 @@ class KostViewModel: ObservableObject {
             furnitureItems[baseIdx].stackedItemID = item.id
             furnitureItems.append(item)
         }
-
-        // Karpet — di tengah kamar
+        
         spawnFloor(type: .rug,      x:  0,    z:  0.2)
-        // Kasur — pojok kiri belakang
         spawnFloor(type: .bed,      x: -1.55, z: -0.6,  yaw: .pi / 2)
-        // Lemari — dinding kanan belakang
         spawnFloor(type: .wardrobe, x:  2.1,  z: -1.1,  yaw: .pi / 2)
-        // Meja — sudut kiri depan
         spawnFloor(type: .desk,     x: -1.8,  z:  0.9,  yaw: .pi)
-        // Lampu — pojok kanan depan
         spawnFloor(type: .lamp,     x:  2.1,  z:  1.2)
-        // Tas di atas meja
         if let deskIdx = furnitureItems.firstIndex(where: { $0.type == .desk }) {
             spawnStacked(type: .bag, on: deskIdx)
         }
-        // Jam dinding
-        spawnWall(type: .wallClock, x: 1.2, z: -1.79, yaw: 0)
-
-        // ── Spawn karakter ──
-        let charNode = buildCharacterNode()
-        characterNode.addChildNode(charNode)
-        root.addChildNode(characterNode)
-
-        // cameraPivot di posisi karakter, orbit kamera di sekelilingnya
-        cameraPivot.eulerAngles.y = SCNFloat(yaw)
-        root.addChildNode(cameraPivot)
-        updateCameraForTPP()
     }
-
+    
     // MARK: - Build Character Node
-
+    
     func buildCharacterNode() -> SCNNode {
         let root = SCNNode()
         root.name = "character"
-
+        
         let skin  = UIColor(red: 0.95, green: 0.78, blue: 0.65, alpha: 1)
         let shirt = UIColor(red: 0.25, green: 0.45, blue: 0.80, alpha: 1)
         let pants = UIColor(red: 0.20, green: 0.22, blue: 0.35, alpha: 1)
         let shoes = UIColor(red: 0.15, green: 0.10, blue: 0.08, alpha: 1)
         let hair  = UIColor(red: 0.18, green: 0.12, blue: 0.08, alpha: 1)
-
+        
         func geo(_ w: CGFloat, _ h: CGFloat, _ d: CGFloat, color: UIColor) -> SCNNode {
             let g = SCNBox(width: w, height: h, length: d, chamferRadius: 0.025)
             g.firstMaterial?.diffuse.contents = color
             g.firstMaterial?.lightingModel = .lambert
             return SCNNode(geometry: g)
         }
-
+        
         // ── Badan ──
         let body = geo(0.30, 0.36, 0.16, color: shirt)
         body.position = SCNVector3(0, 0.72, 0)
         root.addChildNode(body)
-
+        
         // ── Leher ──
         let neck = geo(0.10, 0.08, 0.10, color: skin)
         neck.position = SCNVector3(0, 0.94, 0)
         root.addChildNode(neck)
-
+        
         // ── Kepala ──
         let headGeo = SCNBox(width: 0.24, height: 0.24, length: 0.22, chamferRadius: 0.05)
         headGeo.firstMaterial?.diffuse.contents = skin
@@ -685,7 +957,7 @@ class KostViewModel: ObservableObject {
         let head = SCNNode(geometry: headGeo)
         head.position = SCNVector3(0, 1.07, 0)
         root.addChildNode(head)
-
+        
         // Rambut
         let hairGeo = SCNBox(width: 0.25, height: 0.09, length: 0.23, chamferRadius: 0.03)
         hairGeo.firstMaterial?.diffuse.contents = hair
@@ -693,7 +965,7 @@ class KostViewModel: ObservableObject {
         let hairNode = SCNNode(geometry: hairGeo)
         hairNode.position = SCNVector3(0, 1.21, 0)
         root.addChildNode(hairNode)
-
+        
         // Mata
         for xOff: Float in [-0.06, 0.06] {
             let eyeGeo = SCNSphere(radius: 0.022)
@@ -703,11 +975,11 @@ class KostViewModel: ObservableObject {
             eye.position = SCNVector3(xOff, 1.07, 0.115)
             root.addChildNode(eye)
         }
-
+        
         // ── Lengan — pivot di bahu ──
         let shoulderY: Float = 0.88
         let armOffX:   Float = 0.20
-
+        
         func makeArm(side: Float) -> (pivot: SCNNode, arm: SCNNode) {
             let pivot = SCNNode()
             pivot.position = SCNVector3(side * armOffX, shoulderY, 0)
@@ -721,18 +993,18 @@ class KostViewModel: ObservableObject {
             pivot.addChildNode(hand)
             return (pivot, upper)
         }
-
+        
         let (lArmPivot, _) = makeArm(side: -1)
         let (rArmPivot, _) = makeArm(side:  1)
         root.addChildNode(lArmPivot)
         root.addChildNode(rArmPivot)
         armLPivot = lArmPivot
         armRPivot = rArmPivot
-
+        
         // ── Kaki — pivot di pinggul ──
         let hipY:    Float = 0.54
         let legOffX: Float = 0.07
-
+        
         func makeLeg(side: Float) -> SCNNode {
             let pivot = SCNNode()
             pivot.position = SCNVector3(side * legOffX, hipY, 0)
@@ -750,25 +1022,25 @@ class KostViewModel: ObservableObject {
             pivot.addChildNode(shoe)
             return pivot
         }
-
+        
         let lLegPivot = makeLeg(side: -1)
         let rLegPivot = makeLeg(side:  1)
         root.addChildNode(lLegPivot)
         root.addChildNode(rLegPivot)
         legLPivot = lLegPivot
         legRPivot = rLegPivot
-
+        
         return root
     }
-
+    
     // MARK: - Build Furniture Nodes
-
+    
     func buildFurnitureNode(type: FurnitureType) -> SCNNode {
         let root = SCNNode()
         root.name = "furniture_\(type.rawValue)"
         let fp = type.footprint
         let w = CGFloat(fp.width), d = CGFloat(fp.height)
-
+        
         switch type {
         case .bed:
             let frame = SCNBox(width: w, height: 0.3, length: d, chamferRadius: 0.05)
@@ -783,7 +1055,7 @@ class KostViewModel: ObservableObject {
             pillow.firstMaterial?.diffuse.contents = UIColor(red:0.95,green:0.85,blue:0.75,alpha:1)
             let pNode = SCNNode(geometry: pillow); pNode.position = SCNVector3(0, 0.44, -d/2 + 0.25)
             root.addChildNode(pNode)
-
+            
         case .desk:
             let top = SCNBox(width: w, height: 0.05, length: d, chamferRadius: 0.02)
             top.firstMaterial?.diffuse.contents = UIColor(red:0.80,green:0.60,blue:0.35,alpha:1)
@@ -800,7 +1072,7 @@ class KostViewModel: ObservableObject {
             screen.firstMaterial?.diffuse.contents = UIColor(red:0.10,green:0.10,blue:0.15,alpha:1)
             let sNode = SCNNode(geometry: screen); sNode.position = SCNVector3(0.18, 1.06, d/2 - 0.04)
             root.addChildNode(sNode)
-
+            
         case .wardrobe:
             let body = SCNBox(width: w, height: 1.8, length: d, chamferRadius: 0.03)
             body.firstMaterial?.diffuse.contents = UIColor(red:0.70,green:0.52,blue:0.32,alpha:1)
@@ -817,7 +1089,7 @@ class KostViewModel: ObservableObject {
                 hn.position = SCNVector3(side, 0.9, Float(d/2) + 0.03)
                 root.addChildNode(hn)
             }
-
+            
         case .tv:
             let stand = SCNCylinder(radius: 0.12, height: 0.04)
             stand.firstMaterial?.diffuse.contents = UIColor.darkGray
@@ -831,7 +1103,7 @@ class KostViewModel: ObservableObject {
             screen.firstMaterial?.diffuse.contents = UIColor(red:0.08,green:0.08,blue:0.12,alpha:1)
             let scNode = SCNNode(geometry: screen); scNode.position.y = 0.80
             root.addChildNode(scNode)
-
+            
         case .plant:
             let pot = SCNCylinder(radius: 0.14, height: 0.18)
             pot.firstMaterial?.diffuse.contents = UIColor(red:0.72,green:0.42,blue:0.22,alpha:1)
@@ -848,7 +1120,7 @@ class KostViewModel: ObservableObject {
                 ln.position = SCNVector3(sin(angle)*0.10, h, cos(angle)*0.10)
                 root.addChildNode(ln)
             }
-
+            
         case .rug:
             let rug = SCNBox(width: w, height: 0.02, length: d, chamferRadius: 0.06)
             rug.firstMaterial?.diffuse.contents = UIColor(red:0.72,green:0.18,blue:0.18,alpha:1)
@@ -858,7 +1130,7 @@ class KostViewModel: ObservableObject {
             pattern.firstMaterial?.diffuse.contents = UIColor(red:0.90,green:0.78,blue:0.55,alpha:0.6)
             let pNode2 = SCNNode(geometry: pattern); pNode2.position.y = 0.013
             root.addChildNode(pNode2)
-
+            
         case .lamp:
             let base = SCNCylinder(radius: 0.12, height: 0.04)
             base.firstMaterial?.diffuse.contents = UIColor.darkGray
@@ -878,7 +1150,7 @@ class KostViewModel: ObservableObject {
             omni.attenuationStartDistance = 0.3; omni.attenuationEndDistance = 3.0
             let lNode = SCNNode(); lNode.light = omni; lNode.position = SCNVector3(0, 1.55, 0)
             root.addChildNode(lNode)
-
+            
         case .bag:
             let body = SCNBox(width: 0.36, height: 0.28, length: 0.14, chamferRadius: 0.04)
             body.firstMaterial?.diffuse.contents = UIColor(red:0.18,green:0.22,blue:0.65,alpha:1)
@@ -889,24 +1161,24 @@ class KostViewModel: ObservableObject {
             let hNode = SCNNode(geometry: handle); hNode.eulerAngles.x = .pi/2
             hNode.position = SCNVector3(0, 0.36, 0)
             root.addChildNode(hNode)
-
+            
         case .wallClock:
             let R: CGFloat = 0.175
             let depth: CGFloat = 0.04
-
+            
             let rimGeo = SCNCylinder(radius: R, height: depth)
             rimGeo.firstMaterial?.diffuse.contents = UIColor(red:0.38, green:0.24, blue:0.10, alpha:1)
             let rimNode = SCNNode(geometry: rimGeo)
             rimNode.eulerAngles.x = -.pi / 2
             root.addChildNode(rimNode)
-
+            
             let faceGeo = SCNCylinder(radius: R - 0.012, height: depth + 0.002)
             faceGeo.firstMaterial?.diffuse.contents = UIColor(red:0.97, green:0.95, blue:0.88, alpha:1)
             faceGeo.firstMaterial?.lightingModel = .constant
             let faceNode = SCNNode(geometry: faceGeo)
             faceNode.eulerAngles.x = -.pi / 2
             root.addChildNode(faceNode)
-
+            
             for i in 0..<12 {
                 let angle = Float(i) * (.pi * 2 / 12)
                 let isMain = (i % 3 == 0)
@@ -921,7 +1193,7 @@ class KostViewModel: ObservableObject {
                 tickNode.eulerAngles.z = SCNFloat(-angle)
                 root.addChildNode(tickNode)
             }
-
+            
             let pivotGeo = SCNCylinder(radius: 0.014, height: 0.018)
             pivotGeo.firstMaterial?.diffuse.contents = UIColor(red:0.25, green:0.16, blue:0.08, alpha:1)
             pivotGeo.firstMaterial?.lightingModel = .constant
@@ -929,14 +1201,14 @@ class KostViewModel: ObservableObject {
             pivotNode.eulerAngles.x = -.pi / 2
             pivotNode.position = SCNVector3(0, 0, Float(depth)/2 + 0.006)
             root.addChildNode(pivotNode)
-
+            
             let now = Date(); let cal = Calendar.current
             let hour   = Float(cal.component(.hour,   from: now) % 12)
             let minute = Float(cal.component(.minute, from: now))
             let second = Float(cal.component(.second, from: now))
             let hourAngle   = -(hour + minute / 60.0) * (.pi * 2 / 12)
             let minuteAngle = -(minute + second / 60.0) * (.pi * 2 / 60)
-
+            
             let hourHandGeo = SCNBox(width: 0.014, height: 0.095, length: 0.008, chamferRadius: 0.003)
             hourHandGeo.firstMaterial?.diffuse.contents = UIColor(red:0.12, green:0.08, blue:0.04, alpha:1)
             hourHandGeo.firstMaterial?.lightingModel = .constant
@@ -946,7 +1218,7 @@ class KostViewModel: ObservableObject {
             hourPivot.addChildNode(hourHand); hourPivot.eulerAngles.z = SCNFloat(hourAngle)
             root.addChildNode(hourPivot)
             hourPivot.runAction(SCNAction.repeatForever(.rotateBy(x: 0, y: 0, z: -2 * .pi, duration: 43200)))
-
+            
             let minHandGeo = SCNBox(width: 0.010, height: 0.130, length: 0.008, chamferRadius: 0.003)
             minHandGeo.firstMaterial?.diffuse.contents = UIColor(red:0.12, green:0.08, blue:0.04, alpha:1)
             minHandGeo.firstMaterial?.lightingModel = .constant
@@ -956,7 +1228,7 @@ class KostViewModel: ObservableObject {
             minPivot.addChildNode(minHand); minPivot.eulerAngles.z = SCNFloat(minuteAngle)
             root.addChildNode(minPivot)
             minPivot.runAction(SCNAction.repeatForever(.rotateBy(x: 0, y: 0, z: -2 * .pi, duration: 3600)))
-
+            
             let secHandGeo = SCNBox(width: 0.006, height: 0.150, length: 0.006, chamferRadius: 0.002)
             secHandGeo.firstMaterial?.diffuse.contents = UIColor(red:0.85, green:0.12, blue:0.10, alpha:1)
             secHandGeo.firstMaterial?.lightingModel = .constant
@@ -972,8 +1244,66 @@ class KostViewModel: ObservableObject {
             secPivot.eulerAngles.z = SCNFloat(-second * (.pi * 2 / 60))
             root.addChildNode(secPivot)
             secPivot.runAction(SCNAction.repeatForever(.rotateBy(x: 0, y: 0, z: -2 * .pi, duration: 60)))
+            
+            
+        case .musicPlayer:
+            // Body utama radio — dark charcoal
+            let body = SCNBox(width: CGFloat(w), height: 0.22, length: CGFloat(d), chamferRadius: 0.018)
+            body.firstMaterial?.diffuse.contents  = UIColor(red:0.15, green:0.15, blue:0.18, alpha:1)
+            body.firstMaterial?.specular.contents = UIColor(white:0.3, alpha:1)
+            body.firstMaterial?.lightingModel     = .phong
+            let bodyNode = SCNNode(geometry: body); bodyNode.position.y = 0.11
+            root.addChildNode(bodyNode)
+            
+            // Speaker grille kiri (woven pattern — kotak kecil grid)
+            let grilleW: CGFloat = 0.14, grilleH: CGFloat = 0.12, grilleD: CGFloat = 0.008
+            let grille = SCNBox(width: grilleW, height: grilleH, length: grilleD, chamferRadius: 0.004)
+            grille.firstMaterial?.diffuse.contents = UIColor(red:0.08, green:0.08, blue:0.10, alpha:1)
+            let grilleNode = SCNNode(geometry: grille)
+            grilleNode.position = SCNVector3(-Float(w)*0.22, 0.11, Float(d)/2 + 0.001)
+            root.addChildNode(grilleNode)
+            // Speaker grille kanan
+            let grilleR = grilleNode.clone()
+            grilleR.position.x = Float(w)*0.22
+            root.addChildNode(grilleR)
+            
+            // Speaker cone kiri (circle)
+            let cone = SCNCylinder(radius: 0.045, height: 0.006)
+            cone.firstMaterial?.diffuse.contents = UIColor(red:0.22, green:0.22, blue:0.28, alpha:1)
+            let coneNode = SCNNode(geometry: cone); coneNode.eulerAngles.x = -.pi/2
+            coneNode.position = SCNVector3(-Float(w)*0.22, 0.11, Float(d)/2 + 0.005)
+            root.addChildNode(coneNode)
+            let coneR = coneNode.clone(); coneR.position.x = Float(w)*0.22
+            root.addChildNode(coneR)
+            
+            // Display LCD kecil di tengah
+            let lcd = SCNBox(width: 0.09, height: 0.045, length: 0.006, chamferRadius: 0.004)
+            lcd.firstMaterial?.diffuse.contents  = UIColor(red:0.05, green:0.55, blue:0.35, alpha:1)
+            lcd.firstMaterial?.emission.contents = UIColor(red:0.05, green:0.90, blue:0.50, alpha:0.8)
+            lcd.firstMaterial?.lightingModel     = .constant
+            let lcdNode = SCNNode(geometry: lcd)
+            lcdNode.position = SCNVector3(0, 0.165, Float(d)/2 + 0.002)
+            root.addChildNode(lcdNode)
+            
+            // Tombol putar (knob) kanan atas
+            let knob = SCNCylinder(radius: 0.020, height: 0.018)
+            knob.firstMaterial?.diffuse.contents  = UIColor(red:0.70, green:0.60, blue:0.20, alpha:1)
+            knob.firstMaterial?.specular.contents = UIColor(white:0.8, alpha:1)
+            knob.firstMaterial?.lightingModel     = .phong
+            let knobNode = SCNNode(geometry: knob); knobNode.eulerAngles.x = -.pi/2
+            knobNode.position = SCNVector3(Float(w)*0.35, 0.175, Float(d)/2 + 0.005)
+            root.addChildNode(knobNode)
+            
+            // Antena
+            let antGeo = SCNCylinder(radius: 0.005, height: 0.18)
+            antGeo.firstMaterial?.diffuse.contents = UIColor(red:0.55, green:0.55, blue:0.58, alpha:1)
+            let antNode = SCNNode(geometry: antGeo)
+            antNode.position = SCNVector3(Float(w)*0.42, 0.29, 0)
+            antNode.eulerAngles.z = 0.2   // sedikit miring
+            root.addChildNode(antNode)
         }
 
         return root
     }
 }
+
