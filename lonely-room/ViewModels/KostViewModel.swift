@@ -4,12 +4,15 @@ import Combine
 
 // MARK: - KostViewModel
 class KostViewModel: ObservableObject {
-    let cameraNode = SCNNode()
-    var yaw: Float   = 0
-    let eyeHeight: Float = 1.6
-    let speed: Float     = 0.08
-    let minX: Float = -2.5, maxX: Float =  2.5
-    let minZ: Float = -1.5, maxZ: Float =  1.5
+    let cameraNode     = SCNNode()
+    let characterNode  = SCNNode()
+    let cameraPivot    = SCNNode()   // pivot untuk orbit kamera, terpisah dari karakter
+    var yaw: Float     = 0
+    var charFacing: Float = 0
+    let speed: Float   = 0.06
+    // Boundary karakter: hampir seluruh ruangan (roomW=5.6, roomD=3.6, wT=0.18, margin 0.25)
+    let minX: Float    = -2.5, maxX: Float =  2.5
+    let minZ: Float    = -1.5, maxZ: Float =  1.5
 
     @Published var isWalking         = false
     @Published var furnitureItems: [FurnitureItem] = []
@@ -32,44 +35,200 @@ class KostViewModel: ObservableObject {
     var rainTimeOffset: Double = 0
     var lastRainTimestamp: Double = 0
 
+    // leg pivot nodes untuk animasi berjalan
+    var legLPivot: SCNNode?
+    var legRPivot: SCNNode?
+    var armLPivot: SCNNode?
+    var armRPivot: SCNNode?
+
     init() {
         let cam = SCNCamera()
-        cam.zNear = 0.01; cam.zFar = 50; cam.fieldOfView = 80
-        cameraNode.camera      = cam
-        cameraNode.position    = SCNVector3(0, 1.6, 1.0)
-        cameraNode.eulerAngles = SCNVector3(0, Float.pi, 0)
+        cam.zNear = 0.05; cam.zFar = 100; cam.fieldOfView = 60
+        cameraNode.camera = cam
+
+        // cameraNode di belakang karakter (+Z lokal = belakang saat yaw=0)
+        // Jarak 2.0m, tinggi 1.1m, nunduk sedikit
+        cameraNode.position    = SCNVector3(0, 1.1, 2.0)
+        cameraNode.eulerAngles = SCNVector3(-0.15, 0, 0)
+        cameraPivot.addChildNode(cameraNode)
+
+        characterNode.position = SCNVector3(0, 0, 0)
+        charFacing = 0
+        yaw = 0
+        cameraPivot.position      = SCNVector3(0, 0, 0)
+        cameraPivot.eulerAngles.y = 0
+    }
+
+    // MARK: - TPP Camera
+    func updateCameraForTPP() {
+        cameraPivot.position = SCNVector3(
+            characterNode.position.x,
+            0,
+            Float(characterNode.position.z)
+        )
+        clampCameraAgainstWalls()
+    }
+
+    /// Ideal camera distance from pivot (in local Z)
+    private let idealCameraZ: Float = 2.0
+    /// Minimum camera distance (so it doesn't clip into character)
+    private let minCameraZ:   Float = 0.3
+
+    /// Ray-cast from character's head toward the ideal camera position.
+    /// If a wall is in the way, pull the camera in to just in front of it.
+    func clampCameraAgainstWalls() {
+        guard let root = sceneRoot else { return }
+
+        // Head position in world space (eye level ~1.1m)
+        let charPos = characterNode.worldPosition
+        let headPos = SCNVector3(charPos.x, charPos.y + 1.1, charPos.z)
+
+        // Ideal camera world position — same transform as cameraPivot + cameraNode offset
+        let idealCamPos = cameraNode.worldPosition
+
+        // Direction from head to ideal camera
+        let dx = idealCamPos.x - headPos.x
+        let dy = idealCamPos.y - headPos.y
+        let dz = idealCamPos.z - headPos.z
+        let dist = sqrt(dx*dx + dy*dy + dz*dz)
+        guard dist > 0.001 else { return }
+
+        // SceneKit ray-cast options: only hit back-faces of wall geometry (opaque, named)
+        let options: [String: Any] = [
+            SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.closest.rawValue,
+            SCNHitTestOption.ignoreHiddenNodes.rawValue: true,
+            SCNHitTestOption.backFaceCulling.rawValue: false
+        ]
+
+        let hits = root.hitTestWithSegment(from: headPos, to: idealCamPos, options: options)
+
+        // Filter out character & camera nodes, and non-wall geometry (furniture, floor)
+        let wallHit = hits.first { hit in
+            // Walk up node hierarchy to skip character and camera pivot subtrees
+            var n: SCNNode? = hit.node
+            while let node = n {
+                if node === characterNode || node === cameraPivot { return false }
+                n = node.parent
+            }
+            // Only consider nodes that look like walls/ceiling (have a box geometry with no name
+            // matching furniture or floor)
+            let name = hit.node.name ?? ""
+            if name == "floor" { return false }
+            return true
+        }
+
+        if let hit = wallHit {
+            // Distance from head to wall hit
+            let hx = hit.worldCoordinates.x - headPos.x
+            let hy = hit.worldCoordinates.y - headPos.y
+            let hz = hit.worldCoordinates.z - headPos.z
+            let hitDist = sqrt(hx*hx + hy*hy + hz*hz)
+
+            // Pull back a tiny margin (0.1m) so camera doesn't poke through
+            let clampedDist = max(minCameraZ, hitDist - 0.12)
+            // Express as local Z in cameraPivot space
+            let ratio = clampedDist / dist
+            // New local Z for cameraNode (it's always at (0, 1.1, idealCameraZ) in pivot space)
+            let newLocalZ = idealCameraZ * ratio
+            cameraNode.position.z = newLocalZ
+        } else {
+            // No wall — restore to ideal distance smoothly
+            if cameraNode.position.z != idealCameraZ {
+                cameraNode.position.z = idealCameraZ
+            }
+        }
     }
 
     // MARK: - Movement
 
     func move(dx: Float, dy: Float) {
-        let fwdX =  sin(yaw) * dy * speed
-        let fwdZ =  cos(yaw) * dy * speed
-        let strX = -cos(yaw) * dx * speed
-        let strZ =  sin(yaw) * dx * speed
-        let newX = Float(cameraNode.position.x) + fwdX + strX
-        let newZ = Float(cameraNode.position.z) + fwdZ + strZ
+        // Kamera ada di posisi (sin(yaw)*Z, 1.1, cos(yaw)*Z) relatif pivot.
+        // "Maju" (dy+) = bergerak menjauh dari kamera = arah berlawanan dari kamera
+        // forward = (-sin(yaw), 0, -cos(yaw))
+        // strafe kanan (dx+) = (cos(yaw), 0, -sin(yaw))
+        let camYaw = yaw
+        let fwdX = -sin(camYaw) * dy * speed
+        let fwdZ = -cos(camYaw) * dy * speed
+        let strX =  cos(camYaw) * dx * speed
+        let strZ = -sin(camYaw) * dx * speed
+
+        let newX = Float(characterNode.position.x) + fwdX + strX
+        let newZ = Float(characterNode.position.z) + fwdZ + strZ
+
         let moving = abs(dx) > 0.05 || abs(dy) > 0.05
         if isWalking != moving {
             isWalking = moving
-            if moving { FootstepPlayer.shared.start() } else { FootstepPlayer.shared.stop() }
+            if moving {
+                FootstepPlayer.shared.start()
+                startWalkAnimation()
+            } else {
+                FootstepPlayer.shared.stop()
+                stopWalkAnimation()
+            }
         }
-        cameraNode.position.x = SCNFloat(max(minX, min(maxX, newX)))
-        cameraNode.position.z = SCNFloat(max(minZ, min(maxZ, newZ)))
-        cameraNode.position.y = SCNFloat(eyeHeight)
+
+        let clampedX = SCNFloat(max(minX, min(maxX, newX)))
+        let clampedZ = SCNFloat(max(minZ, min(maxZ, newZ)))
+        characterNode.position.x = clampedX
+        characterNode.position.z = clampedZ
+        characterNode.position.y = 0
+
+        // Karakter smooth rotate ke arah gerak
+        if abs(fwdX + strX) > 0.001 || abs(fwdZ + strZ) > 0.001 {
+            let targetFacing = atan2(fwdX + strX, -(fwdZ + strZ))
+            var diff = targetFacing - charFacing
+            while diff >  Float.pi { diff -= 2 * Float.pi }
+            while diff < -Float.pi { diff += 2 * Float.pi }
+            charFacing += diff * 0.25
+            characterNode.eulerAngles.y = SCNFloat(charFacing)
+        }
+
+        // CameraPivot selalu ikut posisi karakter
+        updateCameraForTPP()
     }
 
     func stopWalking() {
         guard isWalking else { return }
         isWalking = false
         FootstepPlayer.shared.stop()
+        stopWalkAnimation()
+    }
+
+    // MARK: - Walk Animation
+
+    func startWalkAnimation() {
+        let stepAngle: CGFloat = 0.45
+        let duration: TimeInterval = 0.32
+
+        func swing(_ node: SCNNode?, fwd: Bool) {
+            guard let n = node else { return }
+            let a = SCNAction.rotateTo(x: fwd ? stepAngle : -stepAngle, y: 0, z: 0, duration: duration, usesShortestUnitArc: true)
+            let b = SCNAction.rotateTo(x: fwd ? -stepAngle : stepAngle, y: 0, z: 0, duration: duration, usesShortestUnitArc: true)
+            n.runAction(.repeatForever(.sequence([a, b])), forKey: "walk")
+        }
+
+        swing(legLPivot, fwd: true)
+        swing(legRPivot, fwd: false)
+        swing(armLPivot, fwd: false)  // lengan berlawanan dengan kaki
+        swing(armRPivot, fwd: true)
+    }
+
+    func stopWalkAnimation() {
+        [legLPivot, legRPivot, armLPivot, armRPivot].forEach { node in
+            guard let n = node else { return }
+            n.removeAction(forKey: "walk")
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.15
+            n.eulerAngles.x = 0
+            SCNTransaction.commit()
+        }
     }
 
     func rotateCamera(by delta: Float) {
         yaw += delta
-        cameraNode.eulerAngles.y = SCNFloat(yaw + Float.pi)
+        cameraPivot.eulerAngles.y = SCNFloat(yaw)
+        clampCameraAgainstWalls()
     }
-
     // MARK: - Furniture Placement
 
     func hasItem(ofType type: FurnitureType) -> Bool {
@@ -84,7 +243,7 @@ class KostViewModel: ObservableObject {
 
     /// Place a wall-mounted item. Called from the coordinator when user taps on a wall surface.
     func placeWallFurniture(type: FurnitureType, position: SCNVector3, yaw: Float) {
-        guard let root = sceneRoot, !hasItem(ofType: type) else { return }
+        guard let root = sceneRoot else { return }
         let node = buildFurnitureNode(type: type)
         node.position = position
         node.eulerAngles.y = SCNFloat(yaw)
@@ -97,7 +256,7 @@ class KostViewModel: ObservableObject {
     }
 
     func placeFurniture(at worldPos: SCNVector3) {
-        guard let type = pendingType, let root = sceneRoot, !hasItem(ofType: type) else { return }
+        guard let type = pendingType, let root = sceneRoot else { return }
         if type.isWallMounted { return }
 
         // Stack onto existing furniture
@@ -426,7 +585,7 @@ class KostViewModel: ObservableObject {
         return ps
     }
 
-    // MARK: - Default Furniture Layout
+    // MARK: - Default Furniture Layout + Character Spawn
 
     func spawnDefaultFurniture() {
         guard let root = sceneRoot else { return }
@@ -463,27 +622,143 @@ class KostViewModel: ObservableObject {
         }
 
         // Karpet — di tengah kamar
-        spawnFloor(type: .rug, x: 0, z: 0.2)
-
-        // Kasur — pojok kiri belakang, sejajar dinding kiri
-        spawnFloor(type: .bed, x: -1.55, z: -0.6, yaw: .pi / 2)
-
+        spawnFloor(type: .rug,      x:  0,    z:  0.2)
+        // Kasur — pojok kiri belakang
+        spawnFloor(type: .bed,      x: -1.55, z: -0.6,  yaw: .pi / 2)
         // Lemari — dinding kanan belakang
-        spawnFloor(type: .wardrobe, x: 2.1, z: -1.1, yaw: .pi / 2)
-
-        // Meja — sudut kiri depan, menghadap ke dalam
-        spawnFloor(type: .desk, x: -1.8, z: 0.9, yaw: .pi)
-
+        spawnFloor(type: .wardrobe, x:  2.1,  z: -1.1,  yaw: .pi / 2)
+        // Meja — sudut kiri depan
+        spawnFloor(type: .desk,     x: -1.8,  z:  0.9,  yaw: .pi)
         // Lampu — pojok kanan depan
-        spawnFloor(type: .lamp, x: 2.1, z: 1.2)
-
-        // Tas — di atas meja
+        spawnFloor(type: .lamp,     x:  2.1,  z:  1.2)
+        // Tas di atas meja
         if let deskIdx = furnitureItems.firstIndex(where: { $0.type == .desk }) {
             spawnStacked(type: .bag, on: deskIdx)
         }
-
-        // Jam dinding — dinding belakang, kanan jendela
+        // Jam dinding
         spawnWall(type: .wallClock, x: 1.2, z: -1.79, yaw: 0)
+
+        // ── Spawn karakter ──
+        let charNode = buildCharacterNode()
+        characterNode.addChildNode(charNode)
+        root.addChildNode(characterNode)
+
+        // cameraPivot di posisi karakter, orbit kamera di sekelilingnya
+        cameraPivot.eulerAngles.y = SCNFloat(yaw)
+        root.addChildNode(cameraPivot)
+        updateCameraForTPP()
+    }
+
+    // MARK: - Build Character Node
+
+    func buildCharacterNode() -> SCNNode {
+        let root = SCNNode()
+        root.name = "character"
+
+        let skin  = UIColor(red: 0.95, green: 0.78, blue: 0.65, alpha: 1)
+        let shirt = UIColor(red: 0.25, green: 0.45, blue: 0.80, alpha: 1)
+        let pants = UIColor(red: 0.20, green: 0.22, blue: 0.35, alpha: 1)
+        let shoes = UIColor(red: 0.15, green: 0.10, blue: 0.08, alpha: 1)
+        let hair  = UIColor(red: 0.18, green: 0.12, blue: 0.08, alpha: 1)
+
+        func geo(_ w: CGFloat, _ h: CGFloat, _ d: CGFloat, color: UIColor) -> SCNNode {
+            let g = SCNBox(width: w, height: h, length: d, chamferRadius: 0.025)
+            g.firstMaterial?.diffuse.contents = color
+            g.firstMaterial?.lightingModel = .lambert
+            return SCNNode(geometry: g)
+        }
+
+        // ── Badan ──
+        let body = geo(0.30, 0.36, 0.16, color: shirt)
+        body.position = SCNVector3(0, 0.72, 0)
+        root.addChildNode(body)
+
+        // ── Leher ──
+        let neck = geo(0.10, 0.08, 0.10, color: skin)
+        neck.position = SCNVector3(0, 0.94, 0)
+        root.addChildNode(neck)
+
+        // ── Kepala ──
+        let headGeo = SCNBox(width: 0.24, height: 0.24, length: 0.22, chamferRadius: 0.05)
+        headGeo.firstMaterial?.diffuse.contents = skin
+        headGeo.firstMaterial?.lightingModel = .lambert
+        let head = SCNNode(geometry: headGeo)
+        head.position = SCNVector3(0, 1.07, 0)
+        root.addChildNode(head)
+
+        // Rambut
+        let hairGeo = SCNBox(width: 0.25, height: 0.09, length: 0.23, chamferRadius: 0.03)
+        hairGeo.firstMaterial?.diffuse.contents = hair
+        hairGeo.firstMaterial?.lightingModel = .lambert
+        let hairNode = SCNNode(geometry: hairGeo)
+        hairNode.position = SCNVector3(0, 1.21, 0)
+        root.addChildNode(hairNode)
+
+        // Mata
+        for xOff: Float in [-0.06, 0.06] {
+            let eyeGeo = SCNSphere(radius: 0.022)
+            eyeGeo.firstMaterial?.diffuse.contents = UIColor(white: 0.1, alpha: 1)
+            eyeGeo.firstMaterial?.lightingModel = .constant
+            let eye = SCNNode(geometry: eyeGeo)
+            eye.position = SCNVector3(xOff, 1.07, 0.115)
+            root.addChildNode(eye)
+        }
+
+        // ── Lengan — pivot di bahu ──
+        let shoulderY: Float = 0.88
+        let armOffX:   Float = 0.20
+
+        func makeArm(side: Float) -> (pivot: SCNNode, arm: SCNNode) {
+            let pivot = SCNNode()
+            pivot.position = SCNVector3(side * armOffX, shoulderY, 0)
+            // Upper arm
+            let upper = geo(0.09, 0.20, 0.09, color: shirt)
+            upper.position = SCNVector3(0, -0.10, 0)
+            pivot.addChildNode(upper)
+            // Hand
+            let hand = geo(0.08, 0.09, 0.08, color: skin)
+            hand.position = SCNVector3(0, -0.24, 0)
+            pivot.addChildNode(hand)
+            return (pivot, upper)
+        }
+
+        let (lArmPivot, _) = makeArm(side: -1)
+        let (rArmPivot, _) = makeArm(side:  1)
+        root.addChildNode(lArmPivot)
+        root.addChildNode(rArmPivot)
+        armLPivot = lArmPivot
+        armRPivot = rArmPivot
+
+        // ── Kaki — pivot di pinggul ──
+        let hipY:    Float = 0.54
+        let legOffX: Float = 0.07
+
+        func makeLeg(side: Float) -> SCNNode {
+            let pivot = SCNNode()
+            pivot.position = SCNVector3(side * legOffX, hipY, 0)
+            // Paha (celana)
+            let thigh = geo(0.11, 0.26, 0.12, color: pants)
+            thigh.position = SCNVector3(0, -0.13, 0)
+            pivot.addChildNode(thigh)
+            // Betis (celana)
+            let shin = geo(0.10, 0.24, 0.11, color: pants)
+            shin.position = SCNVector3(0, -0.35, 0)
+            pivot.addChildNode(shin)
+            // Sepatu
+            let shoe = geo(0.11, 0.08, 0.17, color: shoes)
+            shoe.position = SCNVector3(0, -0.52, 0.02)
+            pivot.addChildNode(shoe)
+            return pivot
+        }
+
+        let lLegPivot = makeLeg(side: -1)
+        let rLegPivot = makeLeg(side:  1)
+        root.addChildNode(lLegPivot)
+        root.addChildNode(rLegPivot)
+        legLPivot = lLegPivot
+        legRPivot = rLegPivot
+
+        return root
     }
 
     // MARK: - Build Furniture Nodes

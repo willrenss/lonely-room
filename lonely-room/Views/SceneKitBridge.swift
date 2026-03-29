@@ -10,16 +10,16 @@ struct KostSceneView: UIViewRepresentable {
     func makeUIView(context: Context) -> SCNView {
         let scene = makeScene()
         let view  = SCNView()
-        view.scene                    = scene
-        view.pointOfView              = vm.cameraNode
-        view.backgroundColor          = .black
-        view.antialiasingMode         = .multisampling4X
+        view.scene                      = scene
+        view.backgroundColor            = UIColor(red: 0.95, green: 0.93, blue: 0.90, alpha: 1)
+        view.antialiasingMode           = .multisampling4X
         view.autoenablesDefaultLighting = false
 
         vm.scnView   = view
         vm.sceneRoot = scene.rootNode
-        vm.spawnDefaultFurniture()
+        vm.spawnDefaultFurniture()          // adds characterNode + cameraNode to scene
 
+        view.pointOfView = vm.cameraNode    // set AFTER cameraNode is in scene tree
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
         tap.delegate = context.coordinator
@@ -109,37 +109,28 @@ struct KostSceneView: UIViewRepresentable {
                 isRotating = false
                 dragOffset = .zero
                 lastPanX = pt.x
+                // Pan on scene is only for dragging furniture
                 if let hit = vm.hitTestFurniture(at: pt) {
                     vm.selectFurniture(hit)
-                    // Compute drag offset using the item's own Y plane
                     let itemY = hit.node.position.y
                     if let worldPos = vm.hitTestPlane(at: pt, y: itemY) {
                         let fp = hit.node.position
                         dragOffset = SIMD2<Float>(worldPos.x - fp.x, worldPos.z - fp.z)
                     }
-                } else {
-                    isRotating = true
                 }
+                // isRotating stays false — camera rotation handled by SwiftUI layer
             case .changed:
                 let translation = gesture.translation(in: view)
                 let moveDist = hypot(translation.x, translation.y)
                 if moveDist > 6 { panIsDragging = true }
 
-                if isRotating {
-                    let dx = pt.x - lastPanX
-                    let sensitivity: Float = .pi / Float(view.bounds.width)
-                    vm.rotateCamera(by: Float(dx) * sensitivity)
-                    lastPanX = pt.x
-                } else {
-                    guard panIsDragging, let item = vm.selectedFurniture else { return }
-                    // Always unproject onto the item's own Y plane — never drops to Y=0
-                    let itemY = item.node.position.y
-                    if let worldPos = vm.hitTestPlane(at: pt, y: itemY) {
-                        let adjusted = SCNVector3(worldPos.x - dragOffset.x,
-                                                 itemY,
-                                                 worldPos.z - dragOffset.y)
-                        vm.moveFurniture(item, to: adjusted)
-                    }
+                guard panIsDragging, let item = vm.selectedFurniture else { return }
+                let itemY = item.node.position.y
+                if let worldPos = vm.hitTestPlane(at: pt, y: itemY) {
+                    let adjusted = SCNVector3(worldPos.x - dragOffset.x,
+                                             itemY,
+                                             worldPos.z - dragOffset.y)
+                    vm.moveFurniture(item, to: adjusted)
                 }
             case .ended, .cancelled:
                 panIsDragging = false
@@ -316,8 +307,6 @@ struct KostSceneView: UIViewRepresentable {
             pos: SCNVector3(innerLeft + (wLeft - innerLeft)/2, sh/2, innerBack + sd/2))
         box(innerRight - wRight, sh, sd, color: skirtColor,
             pos: SCNVector3(wRight + (innerRight - wRight)/2, sh/2, innerBack + sd/2))
-
-        scene.rootNode.addChildNode(vm.cameraNode)
 
         // ── Lighting ──
         let ambient = SCNLight(); ambient.type = .ambient

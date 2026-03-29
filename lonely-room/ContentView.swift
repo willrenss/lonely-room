@@ -39,7 +39,7 @@ struct ContentView: View {
 
     @State private var moveDX: CGFloat   = 0
     @State private var moveDY: CGFloat   = 0
-    @State private var rotateDX: CGFloat = 0
+    @State private var camLastDragX: CGFloat = 0
 
     @State private var showCatalog    = false
     @State private var catalogWasOpen = false
@@ -88,10 +88,6 @@ struct ContentView: View {
             if abs(moveDX) > 0.02 || abs(moveDY) > 0.02 {
                 vm.move(dx: Float(moveDX), dy: Float(moveDY))
             }
-            if abs(rotateDX) > 0.001 {
-                vm.rotateCamera(by: Float(rotateDX))
-                rotateDX = 0
-            }
         }
         .onReceive(clockTimer) { date in
             currentTime = date
@@ -112,11 +108,6 @@ struct ContentView: View {
             // ── Scene ──
             KostSceneView(vm: vm)
                 .ignoresSafeArea()
-
-            // ── Tangan ──
-            HandView(isWalking: vm.isWalking)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
 
             // ── HUD: Weather (kiri atas) & Jam (kanan atas) ──
             VStack(spacing: 0) {
@@ -192,6 +183,27 @@ struct ContentView: View {
                 }
                 Spacer()
             }
+
+            // ── Camera rotate: drag area di kanan layar ──
+            GeometryReader { geo in
+                Color.clear
+                    .contentShape(Rectangle())
+                    .frame(width: geo.size.width / 2, height: geo.size.height)
+                    .position(x: geo.size.width * 0.75, y: geo.size.height / 2)
+                    .gesture(
+                        DragGesture(minimumDistance: 4)
+                            .onChanged { v in
+                                let curX = v.location.x
+                                if camLastDragX != 0 {
+                                    let delta = Float(curX - camLastDragX)
+                                    vm.rotateCamera(by: delta * 0.007)
+                                }
+                                camLastDragX = curX
+                            }
+                            .onEnded { _ in camLastDragX = 0 }
+                    )
+            }
+            .allowsHitTesting(vm.pendingType == nil && vm.selectedFurniture == nil)
 
             // ── Joystick (kiri bawah) + Tombol + (kanan bawah) ──
             VStack(spacing: 0) {

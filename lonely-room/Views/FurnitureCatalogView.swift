@@ -43,10 +43,10 @@ private struct FurnitureTile: View {
     let ft: FurnitureType
     @ObservedObject var vm: KostViewModel
 
-    var body: some View {
-        let isSelected = vm.pendingType == ft
-        let isOwned    = vm.hasItem(ofType: ft)
+    private var isSelected: Bool { vm.pendingType == ft }
+    private var isOwned: Bool    { vm.hasItem(ofType: ft) }
 
+    var body: some View {
         Button {
             if !isOwned { vm.startPlacing(type: ft) }
         } label: {
