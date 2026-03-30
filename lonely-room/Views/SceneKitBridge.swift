@@ -238,14 +238,125 @@ struct KostSceneView: UIViewRepresentable {
         box(0.06, dH, 0.10, color: frameColor, pos: SCNVector3(dLeft - 0.03, dH/2, faceZ))
         box(0.06, dH, 0.10, color: frameColor, pos: SCNVector3(dRight + 0.03, dH/2, faceZ))
         box(dW + 0.06, 0.06, 0.10, color: frameColor, pos: SCNVector3(dCx, dH + 0.03, faceZ))
-        box(dW - 0.08, dH - 0.04, 0.04, color: UIColor(red:0.60, green:0.42, blue:0.24, alpha:1),
-            pos: SCNVector3(dCx, (dH - 0.04)/2, innerFront - 0.01))
+        
+        let doorPivot = SCNNode()
+        doorPivot.position = SCNVector3(dLeft, 0, innerFront - 0.01)
+        scene.rootNode.addChildNode(doorPivot)
+        
+        let doorWidth = dW - 0.08
+        let doorHeight = dH - 0.04
+        let doorPanel = SCNBox(width: CGFloat(doorWidth), height: CGFloat(doorHeight), length: 0.04, chamferRadius: 0)
+        doorPanel.firstMaterial?.diffuse.contents = UIColor(red:0.60, green:0.42, blue:0.24, alpha:1)
+        let doorPanelNode = SCNNode(geometry: doorPanel)
+        doorPanelNode.position = SCNVector3(doorWidth / 2, doorHeight / 2, 0)
+        doorPivot.addChildNode(doorPanelNode)
+        
         let handleGeo = SCNCylinder(radius: 0.018, height: 0.10)
         handleGeo.firstMaterial?.diffuse.contents = UIColor(red:0.80, green:0.68, blue:0.28, alpha:1)
         let handleNode = SCNNode(geometry: handleGeo)
         handleNode.eulerAngles.z = .pi/2
-        handleNode.position = SCNVector3(dLeft + 0.12, 1.0, innerFront + 0.04)
-        scene.rootNode.addChildNode(handleNode)
+        handleNode.position = SCNVector3(doorWidth - 0.12, 1.0, 0.04) 
+        doorPivot.addChildNode(handleNode)
+        
+        let handleNode2 = handleNode.clone()
+        handleNode2.position = SCNVector3(doorWidth - 0.12, 1.0, -0.04)
+        doorPivot.addChildNode(handleNode2)
+        
+        vm.doorNode = doorPivot
+        vm.doorWorldPos = SIMD3<Float>(dCx, 0, innerFront)
+        
+        // ── Corridor (Koridor) ──
+        let corrWidth: Float = 8.0 // panjang koridor ke kiri-kanan
+        let corrDepth: Float = 1.5
+        let corrHeight: Float = 2.8
+        let corrColor = UIColor(red: 0.88, green: 0.86, blue: 0.84, alpha: 1)
+        let floorCorrColor = UIColor(red: 0.65, green: 0.65, blue: 0.65, alpha: 1)
+        
+        let cCenterZ = fZ + corrDepth/2
+        
+        // Floor koridor utama (menutupi gap threshold pintu dengan memperpanjang ke dalam)
+        box(corrWidth, 0.02, corrDepth, color: floorCorrColor, pos: SCNVector3(0, -0.01, cCenterZ))
+        // Gap filler depan pintu
+        box(dW, 0.02, wT + 0.02, color: floorCorrColor, pos: SCNVector3(dCx, -0.01, innerFront + wT/2))
+        
+        // Ceiling
+        box(corrWidth, 0.02, corrDepth, color: UIColor(white: 0.92, alpha: 1), pos: SCNVector3(0, corrHeight, cCenterZ))
+        
+        // Front Wall (dinding seberang kamar kost)
+        box(corrWidth, corrHeight, 0.04, color: corrColor, pos: SCNVector3(0, corrHeight/2, fZ + corrDepth), name: "wall")
+        // Left Wall (ujung buntu koridor)
+        box(0.04, corrHeight, corrDepth, color: corrColor, pos: SCNVector3(-corrWidth/2, corrHeight/2, cCenterZ), name: "wall")
+        
+        // Dinding koridor sisi kamar kost (selain kamar ini, buat dinding memanjang)
+        let wEndKamar = innerRight + wT/2
+        let wStartKamar = innerLeft - wT/2
+        // Dinding kanan kamar ini
+        box(corrWidth/2 - wEndKamar, corrHeight, 0.04, color: corrColor, pos: SCNVector3(wEndKamar + (corrWidth/2 - wEndKamar)/2, corrHeight/2, fZ), name: "wall")
+        // Dinding kiri kamar ini
+        box(wStartKamar - (-corrWidth/2), corrHeight, 0.04, color: corrColor, pos: SCNVector3(-corrWidth/2 + (wStartKamar - (-corrWidth/2))/2, corrHeight/2, fZ), name: "wall")
+
+        // ── Pintu-pintu tetangga (fake doors) ──
+        let neighborDoorColor = UIColor(red:0.55, green:0.35, blue:0.20, alpha:1)
+        
+        let doorPositionsX: [Float] = [-2.5, -0.6, 3.2] // Posisi pintu kamar lain di koridor
+        for nx in doorPositionsX {
+            // Kusen (Frame)
+            box(0.96, 2.13, 0.10, color: frameColor, pos: SCNVector3(nx, 1.065, fZ + 0.01))
+            
+            // Daun pintu
+            let nDoorGeo = SCNBox(width: 0.86, height: 2.06, length: 0.04, chamferRadius: 0)
+            nDoorGeo.firstMaterial?.diffuse.contents = neighborDoorColor
+            let nDoorNode = SCNNode(geometry: nDoorGeo)
+            // Agak masuk dari kusen
+            nDoorNode.position = SCNVector3(nx, 1.03, fZ + 0.03)
+            scene.rootNode.addChildNode(nDoorNode)
+            
+            // Gagang Pintu (Handle)
+            let nHandleGeo = SCNCylinder(radius: 0.018, height: 0.10)
+            nHandleGeo.firstMaterial?.diffuse.contents = UIColor(red:0.80, green:0.68, blue:0.28, alpha:1)
+            let nHandleNode = SCNNode(geometry: nHandleGeo)
+            nHandleNode.eulerAngles.z = .pi/2
+            // Pasang di sebelah kiri daun pintu
+            nHandleNode.position = SCNVector3(nx - 0.35, 1.0, fZ + 0.06)
+            scene.rootNode.addChildNode(nHandleNode)
+        }
+        
+        // ── Tangga Turun (Staircase) di Ujung Kanan Koridor ──
+        let stairW: Float = 1.4
+        let stairStart = corrWidth/2 - stairW // posisi X ruang tangga
+        
+        // Lantai landing atas (sambung koridor)
+        box(stairW, 0.02, corrDepth, color: floorCorrColor, pos: SCNVector3(stairStart + stairW/2, -0.01, cCenterZ))
+        
+        // Buat anak tangga turun
+        let stepCount = 12
+        let stepH: Float = 0.18
+        let stepD: Float = 0.28
+        let stairColor = UIColor(red: 0.60, green: 0.60, blue: 0.60, alpha: 1)
+        
+        let stairBoxNode = SCNNode()
+        stairBoxNode.position = SCNVector3(stairStart + stairW/2, 0, cCenterZ + corrDepth/2)
+        scene.rootNode.addChildNode(stairBoxNode)
+        
+        for i in 0..<stepCount {
+            let sY = -Float(i+1) * stepH
+            let sZ = Float(i+1) * stepD
+            
+            let st = SCNBox(width: CGFloat(stairW), height: CGFloat(stepH), length: CGFloat(stepD), chamferRadius: 0)
+            st.firstMaterial?.diffuse.contents = stairColor
+            let stN = SCNNode(geometry: st)
+            stN.position = SCNVector3(0, sY + stepH/2, sZ + stepD/2)
+            stairBoxNode.addChildNode(stN)
+        }
+        
+        // Dinding ruang tangga
+        let sDepth = Float(stepCount) * stepD
+        box(0.04, corrHeight, sDepth, color: corrColor, pos: SCNVector3(stairStart, corrHeight/2 - 1.0, cCenterZ + corrDepth/2 + sDepth/2), name: "wall")
+        box(0.04, corrHeight, sDepth, color: corrColor, pos: SCNVector3(stairStart + stairW, corrHeight/2 - 1.0, cCenterZ + corrDepth/2 + sDepth/2), name: "wall")
+        box(stairW, corrHeight, 0.04, color: corrColor, pos: SCNVector3(stairStart + stairW/2, corrHeight/2 - 1.0, cCenterZ + corrDepth/2 + sDepth), name: "wall")
+        
+        // Plafon ruang tangga
+        box(stairW, 0.02, sDepth, color: UIColor(white: 0.92, alpha: 1), pos: SCNVector3(stairStart + stairW/2, corrHeight, cCenterZ + corrDepth/2 + sDepth/2))
 
         // ── Back wall with window cutout ──
         let wW: Float = 1.1, wH: Float = 0.85, wCy: Float = 1.55, wCx: Float = -0.5
@@ -465,6 +576,46 @@ struct KostSceneView: UIViewRepresentable {
         winLightNode.position = SCNVector3(wCx, wCy, innerBack + 0.5)
         scene.rootNode.addChildNode(winLightNode)
         vm.winLightNode = winLightNode
+        
+        // ── Corridor Lights ──
+        for cx in [-2.0, 0.0, 2.0] as [Float] {
+            let cl = SCNLight(); cl.type = .omni
+            cl.color = UIColor(red: 1.0, green: 0.95, blue: 0.85, alpha: 1)
+            cl.intensity = 800
+            cl.attenuationStartDistance = 0.5
+            cl.attenuationEndDistance = 6.0
+            let cln = SCNNode(); cln.light = cl
+            cln.position = SCNVector3(cx, corrHeight - 0.2, cCenterZ)
+            scene.rootNode.addChildNode(cln)
+        }
+
+        // ── Saklar lampu — dinding depan, kanan pintu ──
+        let swX = dRight + 0.20
+        let swY: Float = 1.25
+        let swZ = innerFront - 0.01  
+
+        let plateGeo = SCNBox(width: 0.09, height: 0.13, length: 0.015, chamferRadius: 0.008)
+        let plateMat = SCNMaterial()
+        plateMat.diffuse.contents  = UIColor(red:0.95, green:0.95, blue:0.88, alpha:1)
+        plateMat.lightingModel     = .phong
+        plateMat.specular.contents = UIColor(white:0.4, alpha:1)
+        plateGeo.materials = [plateMat]
+        let plateNode = SCNNode(geometry: plateGeo)
+        plateNode.position = SCNVector3(swX, swY, swZ)
+        plateNode.name = "lightSwitch"
+        scene.rootNode.addChildNode(plateNode)
+        vm.switchNode = plateNode
+
+        let btnGeo = SCNBox(width: 0.045, height: 0.065, length: 0.012, chamferRadius: 0.005)
+        let btnMat = SCNMaterial()
+        btnMat.diffuse.contents  = UIColor(red:0.90, green:0.88, blue:0.78, alpha:1)
+        btnMat.lightingModel     = .phong
+        btnGeo.materials = [btnMat]
+        let btnNode = SCNNode(geometry: btnGeo)
+        btnNode.position = SCNVector3(0, 0, 0.009)
+        plateNode.addChildNode(btnNode)
+
+        vm.switchWorldPos = SIMD3<Float>(swX, 0, swZ)
 
         // Apply current time-of-day immediately so window isn't dark on first load
         DispatchQueue.main.async {

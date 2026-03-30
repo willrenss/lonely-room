@@ -12,7 +12,7 @@ struct SplashView: View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
             VStack(spacing: 16) {
-                Image(systemName: "house.fill") 
+                Image(systemName: "house.fill")
                     .font(.system(size: 64))
                     .foregroundStyle(.primary)
                 Text("Lonely Room")
@@ -27,7 +27,7 @@ struct SplashView: View {
                     scale = 1.0
                     opacity = 1.0
                 }
-            }  
+            }
         }
     }
 }
@@ -226,6 +226,30 @@ struct ContentView: View {
                     Spacer()
 
                     VStack(spacing: 10) {
+                        // Tombol Pintu
+                        if vm.isNearDoor && !vm.isLyingDown && !vm.isSitting {
+                            Button {
+                                vm.toggleDoor()
+                            } label: {
+                                ZStack {
+                                    Capsule()
+                                        .fill(.ultraThinMaterial)
+                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
+                                        .frame(width: 130, height: 40)
+                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+                                    HStack(spacing: 6) {
+                                        Image(systemName: vm.isDoorOpen ? "door.left.hand.open" : "door.left.hand.closed")
+                                            .font(.system(size: 15, weight: .semibold))
+                                        Text(vm.isDoorOpen ? "Tutup Pintu" : "Buka Pintu")
+                                            .font(.system(size: 13, weight: .semibold))
+                                    }
+                                    .foregroundStyle(.white)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+
                         // Tombol Jendela
                         if vm.isNearWindow && !vm.isLyingDown && !vm.isSitting {
                             Button {

@@ -15,19 +15,46 @@ class KostViewModel: ObservableObject {
     let minX: Float    = -2.0, maxX: Float =  2.0
     let minZ: Float    = -1.0, maxZ: Float =  1.0
     
+    // Bounds for corridor (when door is open)
+    let corridorMinX: Float = -3.8
+    let corridorMaxX: Float = 3.8
+    let corridorMinZ: Float = 1.0
+    let corridorMaxZ: Float = 3.2
+    
+    // Pintu
+    let doorMinX: Float = 0.8
+    let doorMaxX: Float = 2.2
+    
     @Published var isWalking         = false
     @Published var isNearBed         = false
     @Published var isLyingDown       = false
     @Published var isNearSwitch      = false
-    @Published var isLightOn         = true
-    @Published var roomBrightness: Float = 0.85
+    @Published var isLightOn: Bool = {
+        if UserDefaults.standard.object(forKey: "isLightOn") != nil {
+            return UserDefaults.standard.bool(forKey: "isLightOn")
+        }
+        return true
+    }()
+    @Published var roomBrightness: Float = {
+        if UserDefaults.standard.object(forKey: "roomBrightness") != nil {
+            return UserDefaults.standard.float(forKey: "roomBrightness")
+        }
+        return 0.85
+    }()
     @Published var isNearMusicPlayer = false
     @Published var isNearChair       = false
     @Published var isSitting         = false
     @Published var isNearWindow      = false
     @Published var isWindowOpen      = false
+    @Published var isNearDoor        = false
+    @Published var isDoorOpen        = false
     @Published var isNearLamp        = false
-    @Published var isLampOn          = false
+    @Published var isLampOn: Bool = {
+        if UserDefaults.standard.object(forKey: "isLampOn") != nil {
+            return UserDefaults.standard.bool(forKey: "isLampOn")
+        }
+        return false
+    }()
     @Published var isNearPlant       = false
     @Published var isWatering        = false
 
@@ -41,6 +68,10 @@ class KostViewModel: ObservableObject {
     var windowPanelROriginX: Float = 0
     weak var curtainL: SCNNode?
     weak var curtainR: SCNNode?
+    
+    weak var doorNode: SCNNode?
+    var doorWorldPos: SIMD3<Float> = .zero
+    
     @Published var furnitureItems: [FurnitureItem] = []
     @Published var selectedFurniture: FurnitureItem?
     @Published var pendingType: FurnitureType? = nil
@@ -173,12 +204,33 @@ class KostViewModel: ObservableObject {
         cameraNode.position.z = newZ
         
         // ── Hard clamp: pastikan posisi WORLD kamera tidak menembus dinding apapun ──
-        // Dinding inner: X ∈ [-2.8, 2.8], Z ∈ [-1.8, 1.8], margin kamera 0.25m
+        // Dinding inner kamar: X ∈ [-2.8, 2.8], Z ∈ [-1.8, 1.8], margin kamera 0.25m
         let camMargin: Float = 0.25
         let camWorldX = charPos.x + sin(pivotYaw) * newZ
         let camWorldZ = charPos.z + cos(pivotYaw) * newZ
-        let clampedCamX = max(-2.8 + camMargin, min(2.8 - camMargin, camWorldX))
-        let clampedCamZ = max(-1.8 + camMargin, min(1.8 - camMargin, camWorldZ))
+        
+        var allowedCamMinX: Float = -2.8
+        var allowedCamMaxX: Float =  2.8
+        var allowedCamMinZ: Float = -1.8
+        var allowedCamMaxZ: Float =  1.8
+        
+        let inDoorCamX = camWorldX > 0.5 && camWorldX < 2.5
+        
+        if isDoorOpen {
+            if camWorldZ > 0.8 {
+                allowedCamMaxZ = 3.8
+                if !inDoorCamX || camWorldZ > 1.8 {
+                    allowedCamMinX = -4.2
+                    allowedCamMaxX =  4.2
+                    if camWorldZ > 1.2 && !inDoorCamX {
+                        allowedCamMinZ = 1.2
+                    }
+                }
+            }
+        }
+        
+        let clampedCamX = max(allowedCamMinX + camMargin, min(allowedCamMaxX - camMargin, camWorldX))
+        let clampedCamZ = max(allowedCamMinZ + camMargin, min(allowedCamMaxZ - camMargin, camWorldZ))
         
         // Jika hard clamp memotong posisi kamera, kurangi jarak Z kamera
         if clampedCamX != camWorldX || clampedCamZ != camWorldZ {
@@ -221,8 +273,57 @@ class KostViewModel: ObservableObject {
             }
         }
         
-        let clampedX = SCNFloat(max(minX, min(maxX, newX)))
-        let clampedZ = SCNFloat(max(minZ, min(maxZ, newZ)))
+        var allowedMinX = minX
+        var allowedMaxX = maxX
+        var allowedMinZ = minZ
+        var allowedMaxZ = maxZ
+        
+        let oldX = Float(characterNode.position.x)
+        let oldZ = Float(characterNode.position.z)
+        
+        // Cek kalau sedang di luar ruangan / koridor luas
+        let inCorridor = oldZ > corridorMinZ + 0.3
+        // Cek di dalam ruangan (termasuk ambang sejauh tembok)
+        let inRoom = oldZ <= maxZ
+        // Cek area sedang transit di threshold pintu
+        let inTransit = oldZ > maxZ && oldZ <= corridorMinZ + 0.3
+
+        if isDoorOpen {
+            if inCorridor {
+                // Udah murni di koridor luas, bebas ke kiri kanan koridor
+                allowedMinX = corridorMinX
+                allowedMaxX = corridorMaxX
+                allowedMaxZ = corridorMaxZ
+                
+                // Kalau mau kembali masuk threshold pintu, X harus selaras pintu
+                if newX > doorMinX && newX < doorMaxX {
+                    allowedMinZ = minZ // bisa tembus masuk kembali ke kamar
+                } else {
+                    allowedMinZ = corridorMinZ + 0.4 // ga boleh nembus tembok dinding dari luar
+                }
+            } else if inTransit {
+                // Sedang jalan di area tebal dinding pintu
+                allowedMinX = doorMinX
+                allowedMaxX = doorMaxX
+                allowedMinZ = minZ
+                allowedMaxZ = corridorMaxZ
+            } else if inRoom {
+                // Di dalam kamar, batasan standar (X murni kamar)
+                // Tapi z bisa terus ke koridor kalau X pas dari awal kena pintu
+                if oldX > doorMinX && oldX < doorMaxX {
+                    allowedMaxZ = corridorMaxZ
+                    
+                    // Supaya gak meleset waktu nyenggol kusen pintu saat tembus:
+                    if newZ > maxZ {
+                        allowedMinX = doorMinX
+                        allowedMaxX = doorMaxX
+                    }
+                }
+            }
+        }
+        
+        let clampedX = SCNFloat(max(allowedMinX, min(allowedMaxX, newX)))
+        let clampedZ = SCNFloat(max(allowedMinZ, min(allowedMaxZ, newZ)))
         characterNode.position.x = clampedX
         characterNode.position.z = clampedZ
         characterNode.position.y = 0
@@ -233,6 +334,7 @@ class KostViewModel: ObservableObject {
         checkNearMusicPlayer()
         checkNearChair()
         checkNearWindow()
+        checkNearDoor()
         checkNearLamp()
         checkNearPlant()
         
@@ -355,6 +457,30 @@ class KostViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.checkNearBed(); self.checkNearSwitch(); self.checkNearMusicPlayer() }
     }
     
+    // MARK: - Door Proximity & Toggle
+    
+    func checkNearDoor() {
+        let cx = Float(characterNode.position.x)
+        let cz = Float(characterNode.position.z)
+        let dx = cx - doorWorldPos.x
+        let dz = cz - doorWorldPos.z
+        isNearDoor = sqrt(dx*dx + dz*dz) < 1.4
+    }
+    
+    func toggleDoor() {
+        isDoorOpen.toggle()
+        guard let door = doorNode else { return }
+        
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.5
+        SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        // Pintu terbuka dengan memutar ke arah luar / dalam. Karena pivot di kiri, y = -pi/2
+        door.eulerAngles.y = isDoorOpen ? -Float.pi / 2 : 0
+        SCNTransaction.commit()
+        
+        DoorPlayer.shared.play()
+    }
+    
     // MARK: - Music Player Proximity
     
     func checkNearMusicPlayer() {
@@ -420,6 +546,8 @@ class KostViewModel: ObservableObject {
         legRPivot?.eulerAngles  = SCNVector3(0, 0, 0)
         kneeLPivot?.eulerAngles = SCNVector3(0, 0, 0)
         kneeRPivot?.eulerAngles = SCNVector3(0, 0, 0)
+        armLPivot?.eulerAngles  = SCNVector3(0, 0, 0)
+        armRPivot?.eulerAngles  = SCNVector3(0, 0, 0)
 
         // Paha rotate -π/2 di X → horizontal ke depan
         let thighAngle = CGFloat.pi / 2
@@ -488,6 +616,7 @@ class KostViewModel: ObservableObject {
             self.checkNearSwitch()
             self.checkNearMusicPlayer()
             self.checkNearWindow()
+            self.checkNearDoor()
         }
     }
 
@@ -517,6 +646,8 @@ class KostViewModel: ObservableObject {
 
     func toggleLamp() {
         isLampOn.toggle()
+        UserDefaults.standard.set(isLampOn, forKey: "isLampOn")
+        
         // Update omni light di semua lamp node
         for item in furnitureItems where item.type == .lamp {
             item.node.enumerateChildNodes { node, _ in
@@ -756,6 +887,8 @@ class KostViewModel: ObservableObject {
     
     func toggleLight() {
         isLightOn.toggle()
+        UserDefaults.standard.set(isLightOn, forKey: "isLightOn")
+        
         applyRoomLight()
         // Visual feedback: saklar berubah warna
         if let sw = switchNode, let mat = sw.geometry?.firstMaterial {
@@ -773,6 +906,8 @@ class KostViewModel: ObservableObject {
     
     func setBrightness(_ value: Float) {
         roomBrightness = max(0.0, min(1.0, value))
+        UserDefaults.standard.set(roomBrightness, forKey: "roomBrightness")
+        
         if isLightOn { applyRoomLight() }
     }
 
@@ -1247,6 +1382,24 @@ class KostViewModel: ObservableObject {
         let charNode = buildCharacterNode()
         characterNode.addChildNode(charNode)
         root.addChildNode(characterNode)
+        
+        // Restore lamp state
+        for item in furnitureItems where item.type == .lamp {
+            item.node.enumerateChildNodes { node, _ in
+                guard let light = node.light, light.type == .omni else { return }
+                light.intensity = self.isLampOn ? 600 : 0
+            }
+        }
+        
+        // Set switch visual state
+        if let sw = switchNode, let mat = sw.geometry?.firstMaterial {
+            mat.diffuse.contents = isLightOn
+            ? UIColor(red:0.95, green:0.95, blue:0.88, alpha:1)
+            : UIColor(red:0.30, green:0.30, blue:0.30, alpha:1)
+            mat.emission.contents = isLightOn
+            ? UIColor(red:1.0, green:0.97, blue:0.80, alpha:0.6)
+            : UIColor.black
+        }
         
         cameraPivot.eulerAngles.y = SCNFloat(yaw)
         cameraNode.position    = SCNVector3(0, 1.1, 2.0)
@@ -1757,4 +1910,3 @@ class KostViewModel: ObservableObject {
         return root
     }
 }
-
