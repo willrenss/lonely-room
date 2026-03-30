@@ -22,6 +22,25 @@ class KostViewModel: ObservableObject {
     @Published var isLightOn         = true
     @Published var roomBrightness: Float = 0.85
     @Published var isNearMusicPlayer = false
+    @Published var isNearChair       = false
+    @Published var isSitting         = false
+    @Published var isNearWindow      = false
+    @Published var isWindowOpen      = false
+    @Published var isNearLamp        = false
+    @Published var isLampOn          = false
+    @Published var isNearPlant       = false
+    @Published var isWatering        = false
+
+    weak var wateringCanNode: SCNNode?   // node kaleng di tangan kanan karakter
+
+    // Posisi world jendela untuk proximity check
+    var windowWorldPos: SIMD3<Float> = .zero
+    weak var windowPanelL: SCNNode?
+    weak var windowPanelR: SCNNode?
+    var windowPanelLOriginX: Float = 0
+    var windowPanelROriginX: Float = 0
+    weak var curtainL: SCNNode?
+    weak var curtainR: SCNNode?
     @Published var furnitureItems: [FurnitureItem] = []
     @Published var selectedFurniture: FurnitureItem?
     @Published var pendingType: FurnitureType? = nil
@@ -34,6 +53,8 @@ class KostViewModel: ObservableObject {
     weak var sceneRoot:        SCNNode?
     weak var glassNode:        SCNNode?
     weak var ambientNode:      SCNNode?
+    weak var sunLightNode:     SCNNode?
+    weak var fillLightNode:    SCNNode?
     weak var winLightNode:     SCNNode?
     weak var outsideNode:      SCNNode?
     weak var rainParticleNode: SCNNode?
@@ -48,6 +69,8 @@ class KostViewModel: ObservableObject {
     // leg pivot nodes untuk animasi berjalan
     var legLPivot: SCNNode?
     var legRPivot: SCNNode?
+    var kneeLPivot: SCNNode?
+    var kneeRPivot: SCNNode?
     var armLPivot: SCNNode?
     var armRPivot: SCNNode?
     
@@ -172,7 +195,7 @@ class KostViewModel: ObservableObject {
     // MARK: - Movement
     
     func move(dx: Float, dy: Float) {
-        guard !isLyingDown else { return }
+        guard !isLyingDown, !isSitting else { return }
         // Kamera ada di posisi (sin(yaw)*Z, 1.1, cos(yaw)*Z) relatif pivot.
         // "Maju" (dy+) = bergerak menjauh dari kamera = arah berlawanan dari kamera
         // forward = (-sin(yaw), 0, -cos(yaw))
@@ -208,6 +231,10 @@ class KostViewModel: ObservableObject {
         checkNearBed()
         checkNearSwitch()
         checkNearMusicPlayer()
+        checkNearChair()
+        checkNearWindow()
+        checkNearLamp()
+        checkNearPlant()
         
         // Karakter smooth rotate ke arah gerak
         if abs(fwdX + strX) > 0.001 || abs(fwdZ + strZ) > 0.001 {
@@ -255,26 +282,26 @@ class KostViewModel: ObservableObject {
         let bx = Float(bedNode.position.x)
         let bz = Float(bedNode.position.z)
         
-        // ── Posisi bantal dalam world space ──
-        // Bantal di local (0, 0, -0.75). SceneKit Y-rotation transform:
-        //   wx = bx + sin(yaw)*0.75
-        //   wz = bz - cos(yaw)*0.75
+        // ── Posisi rebahan ──
+        // eulerAngles = (-π/2, lyingFacing, 0): kepala (local +Y) → world (sin(Y), 0, cos(Y))
+        // Dari hasil test: lyingFacing = bedYaw + π → kepala/kaki sudah di arah yang benar
+        // tapi posisi masih di tengah kasur. Geser karakter ke arah bantal (~0.5m)
+        // agar kepala tepat di atas bantal.
         //
-        // Kaki (origin node) diletakkan di posisi bantal.
-        // eulerAngles.x = +π/2 → muka ke atas.
-        // Local +Y (kepala) → world dir = (sin(Y), 0, -cos(Y))
-        // Kepala extend ke arah kaki kasur = local +Z kasur = (-sin(yaw), 0, cos(yaw))
-        //   → Y = yaw + π
-        let pillowWorldX = bx + sin(bedYaw) * 0.75
-        let pillowWorldZ = bz - cos(bedYaw) * 0.75
-        let lyingFacing: Float = bedYaw + .pi
-        let mattressTopY: Float = 0.44
+        // Arah bantal (local -Z kasur) di world = (-sin(bedYaw), 0, -cos(bedYaw))
+        let lyingFacing: Float = bedYaw   // flip: kepala kiri, kaki kanan
+        let pillarDirX = sin(bedYaw)    // arah dari center ke bantal (berlawanan dari sebelumnya)
+        let pillarDirZ = cos(bedYaw)
+        // Geser origin karakter 0.5m ke arah bantal dari center kasur
+        let charOriginX = bx + pillarDirX * 0.5
+        let charOriginZ = bz + pillarDirZ * 0.5
+        let mattressTopY: Float = 0.42
         
         SCNTransaction.begin()
         SCNTransaction.animationDuration = 0.7
         SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        characterNode.position    = SCNVector3(pillowWorldX, mattressTopY, pillowWorldZ)
-        characterNode.eulerAngles = SCNVector3(.pi / 2, lyingFacing, 0)
+        characterNode.position    = SCNVector3(charOriginX, mattressTopY, charOriginZ)
+        characterNode.eulerAngles = SCNVector3(-.pi / 2, lyingFacing, 0)
         charFacing = lyingFacing
         SCNTransaction.commit()
         
@@ -339,7 +366,384 @@ class KostViewModel: ObservableObject {
         let dz = cz - Float(mp.node.position.z)
         isNearMusicPlayer = sqrt(dx*dx + dz*dz) < 1.2
     }
-    
+
+    // MARK: - Chair Proximity & Sit
+
+    func checkNearChair() {
+        guard !isSitting else { return }
+        let cx = Float(characterNode.position.x)
+        let cz = Float(characterNode.position.z)
+        let chair = furnitureItems.first(where: { $0.type == .chair })
+        guard let ch = chair else { isNearChair = false; return }
+        let dx = cx - Float(ch.node.position.x)
+        let dz = cz - Float(ch.node.position.z)
+        isNearChair = sqrt(dx*dx + dz*dz) < 1.0
+    }
+
+    func sitDown() {
+        guard let chair = furnitureItems.first(where: { $0.type == .chair }) else { return }
+        isSitting   = true
+        isNearChair = false
+        stopWalking()
+
+        let cx   = Float(chair.node.position.x)
+        let cz   = Float(chair.node.position.z)
+        let yaw  = Float(chair.node.eulerAngles.y)
+
+        // Karakter duduk di tengah seat, menghadap ke depan kursi
+        let facingYaw: Float = yaw
+
+        // seatTopY = tinggi atas seat kursi
+        // hipY     = tinggi hip pivot dari root karakter (0.54)
+        // characterNode.y = seatTopY - hipY agar pantat tepat duduk di seat
+        let seatTopY: Float = 0.50   // seat position.y=0.46 + half height 0.04
+        let hipY:     Float = 0.54
+        let charY:    Float = seatTopY - hipY   // ≈ -0.04
+
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.45
+        SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        characterNode.position    = SCNVector3(cx, charY, cz)
+        characterNode.eulerAngles = SCNVector3(0, facingYaw, 0)
+        charFacing = facingYaw
+        SCNTransaction.commit()
+
+        // Kamera sedikit lebih rendah dan dekat
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.45
+        cameraNode.position    = SCNVector3(0, 0.75, 1.6)
+        cameraNode.eulerAngles = SCNVector3(-0.10, 0, 0)
+        SCNTransaction.commit()
+
+        // Reset semua pivot kaki dulu
+        legLPivot?.eulerAngles  = SCNVector3(0, 0, 0)
+        legRPivot?.eulerAngles  = SCNVector3(0, 0, 0)
+        kneeLPivot?.eulerAngles = SCNVector3(0, 0, 0)
+        kneeRPivot?.eulerAngles = SCNVector3(0, 0, 0)
+
+        // Paha rotate -π/2 di X → horizontal ke depan
+        let thighAngle = CGFloat.pi / 2
+        legLPivot?.runAction(.rotateTo(x: -thighAngle, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+        legRPivot?.runAction(.rotateTo(x: -thighAngle, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+        // Betis rotate +π/2 di X dari knee pivot → tegak lurus ke bawah
+        kneeLPivot?.runAction(.rotateTo(x: thighAngle, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+        kneeRPivot?.runAction(.rotateTo(x: thighAngle, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+        // Turunkan lengan
+        armLPivot?.runAction(.rotateTo(x: CGFloat.pi * 0.15, y: 0, z: 0, duration: 0.45))
+        armRPivot?.runAction(.rotateTo(x: CGFloat.pi * 0.15, y: 0, z: 0, duration: 0.45))
+    }
+
+    func standUpChair() {
+        guard isSitting else { return }
+        isSitting = false
+
+        // Berdiri di depan kursi (geser sedikit ke depan dari seat)
+        if let chair = furnitureItems.first(where: { $0.type == .chair }) {
+            let cx  = Float(chair.node.position.x)
+            let cz  = Float(chair.node.position.z)
+            let yaw = Float(chair.node.eulerAngles.y)
+            // Geser 0.5m ke depan dari kursi supaya tidak nge-clip
+            let standX = cx + sin(yaw) * 0.55
+            let standZ = cz + cos(yaw) * 0.55 * -1
+
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.45
+            SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            characterNode.position    = SCNVector3(standX, 0, standZ)
+            characterNode.eulerAngles = SCNVector3(0, charFacing, 0)
+            SCNTransaction.commit()
+        } else {
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.45
+            characterNode.position.y = 0
+            SCNTransaction.commit()
+        }
+
+        // Kembalikan kamera normal
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.45
+        cameraNode.position    = SCNVector3(0, 1.1, 2.0)
+        cameraNode.eulerAngles = SCNVector3(-0.15, 0, 0)
+        SCNTransaction.commit()
+
+        // Luruskan kembali kaki dan lengan ke posisi berdiri
+        legLPivot?.runAction(.rotateTo(x: 0, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+        legRPivot?.runAction(.rotateTo(x: 0, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+        kneeLPivot?.runAction(.rotateTo(x: 0, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+        kneeRPivot?.runAction(.rotateTo(x: 0, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+        armLPivot?.runAction(.rotateTo(x: 0, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+        armRPivot?.runAction(.rotateTo(x: 0, y: 0, z: 0, duration: 0.45, usesShortestUnitArc: true))
+
+        updateCameraForTPP()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.legLPivot?.eulerAngles  = SCNVector3(0, 0, 0)
+            self.legRPivot?.eulerAngles  = SCNVector3(0, 0, 0)
+            self.kneeLPivot?.eulerAngles = SCNVector3(0, 0, 0)
+            self.kneeRPivot?.eulerAngles = SCNVector3(0, 0, 0)
+            self.armLPivot?.eulerAngles  = SCNVector3(0, 0, 0)
+            self.armRPivot?.eulerAngles  = SCNVector3(0, 0, 0)
+            self.checkNearChair()
+            self.checkNearBed()
+            self.checkNearSwitch()
+            self.checkNearMusicPlayer()
+            self.checkNearWindow()
+        }
+    }
+
+    // MARK: - Window
+
+    func checkNearWindow() {
+        let cx = Float(characterNode.position.x)
+        let cz = Float(characterNode.position.z)
+        let dx = cx - windowWorldPos.x
+        let dz = cz - windowWorldPos.z
+        isNearWindow = sqrt(dx*dx + dz*dz) < 1.4
+    }
+
+    // MARK: - Floor Lamp
+
+    func checkNearLamp() {
+        let cx = Float(characterNode.position.x)
+        let cz = Float(characterNode.position.z)
+        // Cek semua lamp item, aktif kalau dekat salah satu
+        let near = furnitureItems.filter { $0.type == .lamp }.contains { item in
+            let dx = cx - Float(item.node.position.x)
+            let dz = cz - Float(item.node.position.z)
+            return sqrt(dx*dx + dz*dz) < 1.0
+        }
+        isNearLamp = near
+    }
+
+    func toggleLamp() {
+        isLampOn.toggle()
+        // Update omni light di semua lamp node
+        for item in furnitureItems where item.type == .lamp {
+            item.node.enumerateChildNodes { node, _ in
+                guard let light = node.light, light.type == .omni else { return }
+                SCNTransaction.begin()
+                SCNTransaction.animationDuration = 0.3
+                light.intensity = self.isLampOn ? 600 : 0
+                SCNTransaction.commit()
+            }
+        }
+    }
+
+    func toggleWindow() {
+        isWindowOpen.toggle()
+        guard let panelL = windowPanelL, let panelR = windowPanelR else { return }
+
+        let targetLx: Float = isWindowOpen ? windowPanelLOriginX - 0.28 : windowPanelLOriginX
+        let targetRx: Float = isWindowOpen ? windowPanelROriginX + 0.28 : windowPanelROriginX
+
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.5
+        SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        panelL.position.x = targetLx
+        panelR.position.x = targetRx
+        panelL.opacity = isWindowOpen ? 0.25 : 0.72
+        panelR.opacity = isWindowOpen ? 0.25 : 0.72
+        SCNTransaction.commit()
+
+        // Animasi tirai berbasis pivot — tirai berayun dari ujung atas seperti tertiup angin
+        if isWindowOpen {
+            // Tirai berayun ke dalam ruangan (rotasi X negatif = ayun ke depan/dalam)
+            // pivot ada di atas, jadi rotateBy X negatif = bawah tirai ke dalam ruangan
+            //
+            // 1) Hembusan awal: ayunan besar masuk, lalu damp seperti pendulum
+            _  = CAMediaTimingFunction(name: .easeIn)
+            _ = CAMediaTimingFunction(name: .easeOut)
+
+            func windBlast(for curtain: SCNNode) {
+                // Fase 1 – hembus kencang ke dalam (sudut ~30°)
+                let phase1 = SCNAction.customAction(duration: 0.55) { node, t in
+                    let progress = Float(t / 0.55)
+                    // easeOut: cepat di awal, lambat di akhir
+                    let eased = 1 - pow(1 - progress, 3)
+                    node.eulerAngles.x = -eased * Float.pi * 0.17   // max ~30°
+                }
+                // Fase 2 – balik ke luar sedikit (rebound ~12°)
+                let phase2 = SCNAction.customAction(duration: 0.38) { node, t in
+                    let progress = Float(t / 0.38)
+                    let eased = sin(progress * Float.pi)
+                    let baseAngle: Float = -Float.pi * 0.17
+                    node.eulerAngles.x = baseAngle + eased * Float.pi * 0.08
+                }
+                // Fase 3 – settle ke posisi angin steady (~18°)
+                let phase3 = SCNAction.customAction(duration: 0.45) { node, t in
+                    let progress = Float(t / 0.45)
+                    let eased = 1 - pow(1 - progress, 2)
+                    let fromAngle: Float = -Float.pi * 0.17 + Float.pi * 0.08 * sin(Float.pi)
+                    let toAngle:   Float = -Float.pi * 0.105   // ~19° steady
+                    node.eulerAngles.x = fromAngle + (toAngle - fromAngle) * eased
+                }
+
+                // Loop angin halus: berayun perlahan ±4° di sekitar posisi steady
+                let swayAmp:  Float = Float.pi * 0.025   // ±4.5°
+                let baseAngle: Float = -Float.pi * 0.105
+                let gentleSway = SCNAction.repeatForever(.sequence([
+                    // Hembus sedikit lebih dalam
+                    SCNAction.customAction(duration: 1.4) { node, t in
+                        let p = Float(t / 1.4)
+                        let wave = sin(p * Float.pi)                // 0→1→0
+                        node.eulerAngles.x = baseAngle - wave * swayAmp
+                    },
+                    // Balik sedikit
+                    SCNAction.customAction(duration: 1.1) { node, t in
+                        let p = Float(t / 1.1)
+                        let wave = sin(p * Float.pi)
+                        node.eulerAngles.x = baseAngle + wave * (swayAmp * 0.5)
+                    }
+                ]))
+
+                curtain.removeAllActions()
+                curtain.runAction(.sequence([phase1, phase2, phase3, gentleSway]))
+            }
+
+            if let cL = curtainL { windBlast(for: cL) }
+            if let cR = curtainR { windBlast(for: cR) }
+
+        } else {
+            // Jendela tutup → tirai jatuh kembali diam perlahan
+            [curtainL, curtainR].forEach { c in
+                guard let c else { return }
+                c.removeAllActions()
+                // Ayun kecil sebelum berhenti (efek pendulum mati)
+                let settle = SCNAction.sequence([
+                    SCNAction.customAction(duration: 0.6) { node, t in
+                        let p = Float(t / 0.6)
+                        let decay = exp(-p * 3.5)
+                        let current = node.eulerAngles.x
+                        node.eulerAngles.x = current * (1 - p) * decay
+                    },
+                    SCNAction.customAction(duration: 0.3) { node, _ in
+                        node.eulerAngles.x = 0
+                    }
+                ])
+                c.runAction(settle)
+            }
+        }
+
+        // Suara angin
+        if isWindowOpen { WindPlayer.shared.start() }
+        else            { WindPlayer.shared.stop()  }
+    }
+
+    // MARK: - Plant Proximity & Watering
+
+    func checkNearPlant() {
+        guard !isWatering else { return }
+        let cx = Float(characterNode.position.x)
+        let cz = Float(characterNode.position.z)
+        let near = furnitureItems.filter { $0.type == .plant }.contains { item in
+            let dx = cx - Float(item.node.position.x)
+            let dz = cz - Float(item.node.position.z)
+            return sqrt(dx*dx + dz*dz) < 1.0
+        }
+        isNearPlant = near
+    }
+
+    func waterPlant() {
+        guard !isWatering else { return }
+        isWatering  = true
+        isNearPlant = false
+
+        // Pasang kaleng penyiram di tangan kanan
+        if let armR = armRPivot {
+            let can = buildWateringCanNode()
+            can.name = "wateringCan"
+            // Posisi di ujung tangan (hand berada di y=-0.24 dari pivot)
+            can.position = SCNVector3(0.06, -0.30, 0.06)
+            can.eulerAngles = SCNVector3(0, Float.pi * 0.1, Float.pi * 0.15)
+            can.scale = SCNVector3(0.55, 0.55, 0.55)
+            can.opacity = 0
+            armR.addChildNode(can)
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.25
+            can.opacity = 1
+            SCNTransaction.commit()
+            wateringCanNode = can
+        }
+
+        // Animasi lengan kanan terangkat ke depan-atas (menyiram)
+        armRPivot?.runAction(.sequence([
+            .rotateTo(x: -CGFloat.pi * 0.45, y: CGFloat.pi * 0.08, z: 0, duration: 0.4, usesShortestUnitArc: true),
+            .wait(duration: 1.2),
+            .rotateTo(x: 0, y: 0, z: 0, duration: 0.4, usesShortestUnitArc: true)
+        ]))
+
+        // Mulai suara siram
+        WateringPlayer.shared.start()
+
+        // Lepas kaleng setelah animasi selesai
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+            // Stop suara siram
+            WateringPlayer.shared.stop()
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.2
+            self.wateringCanNode?.opacity = 0
+            SCNTransaction.commit()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                self.wateringCanNode?.removeFromParentNode()
+                self.wateringCanNode = nil
+                self.isWatering = false
+                self.checkNearPlant()
+            }
+        }
+    }
+
+    /// Buat SCNNode kaleng penyiram mini yang ditempel ke lengan karakter
+    private func buildWateringCanNode() -> SCNNode {
+        let root = SCNNode()
+        let green = UIColor(red: 0.22, green: 0.62, blue: 0.42, alpha: 1)
+        let darkGreen = UIColor(red: 0.14, green: 0.42, blue: 0.28, alpha: 1)
+
+        // Badan kaleng
+        let body = SCNBox(width: 0.18, height: 0.14, length: 0.10, chamferRadius: 0.02)
+        body.firstMaterial?.diffuse.contents = green
+        body.firstMaterial?.lightingModel = .lambert
+        let bodyNode = SCNNode(geometry: body)
+        bodyNode.position = SCNVector3(0, 0, 0)
+        root.addChildNode(bodyNode)
+
+        // Tutup atas
+        let lid = SCNBox(width: 0.14, height: 0.03, length: 0.08, chamferRadius: 0.01)
+        lid.firstMaterial?.diffuse.contents = darkGreen
+        lid.firstMaterial?.lightingModel = .lambert
+        let lidNode = SCNNode(geometry: lid)
+        lidNode.position = SCNVector3(0, 0.085, 0)
+        root.addChildNode(lidNode)
+
+        // Gagang (handle) melengkung — pakai torus
+        let handle = SCNTorus(ringRadius: 0.055, pipeRadius: 0.012)
+        handle.firstMaterial?.diffuse.contents = darkGreen
+        handle.firstMaterial?.lightingModel = .lambert
+        let handleNode = SCNNode(geometry: handle)
+        handleNode.eulerAngles = SCNVector3(0, 0, Float.pi / 2)
+        handleNode.position = SCNVector3(0.12, 0, 0)
+        root.addChildNode(handleNode)
+
+        // Moncong (spout) — silinder miring ke depan
+        let spout = SCNCylinder(radius: 0.018, height: 0.14)
+        spout.firstMaterial?.diffuse.contents = green
+        spout.firstMaterial?.lightingModel = .lambert
+        let spoutNode = SCNNode(geometry: spout)
+        spoutNode.eulerAngles = SCNVector3(Float.pi * 0.35, 0, 0)
+        spoutNode.position = SCNVector3(-0.06, 0.06, -0.10)
+        root.addChildNode(spoutNode)
+
+        // Kepala sprinkler (rose)
+        let rose = SCNCylinder(radius: 0.032, height: 0.018)
+        rose.firstMaterial?.diffuse.contents = darkGreen
+        rose.firstMaterial?.lightingModel = .lambert
+        let roseNode = SCNNode(geometry: rose)
+        roseNode.eulerAngles = SCNVector3(Float.pi * 0.35, 0, 0)
+        roseNode.position = SCNVector3(-0.06, 0.115, -0.155)
+        root.addChildNode(roseNode)
+
+        return root
+    }
+
     // MARK: - Light Switch
     
     func checkNearSwitch() {
@@ -368,20 +772,34 @@ class KostViewModel: ObservableObject {
     }
     
     func setBrightness(_ value: Float) {
-        roomBrightness = max(0.05, min(1.0, value))
+        roomBrightness = max(0.0, min(1.0, value))
         if isLightOn { applyRoomLight() }
     }
-    
+
     func applyRoomLight() {
-        guard let light = roomLightNode?.light else { return }
+        let b = CGFloat(roomBrightness)   // 0.0 – 1.0
+
         SCNTransaction.begin()
         SCNTransaction.animationDuration = 0.3
+
         if isLightOn {
-            light.intensity = CGFloat(roomBrightness) * 1200
-            light.color     = UIColor(red: 1.0, green: 0.95, blue: 0.80, alpha: 1)
+            // Ceiling omni: 0 (redup) → 2000 (terang)
+            roomLightNode?.light?.intensity  = b * 2000
+            roomLightNode?.light?.color      = UIColor(red: 1.0, green: 0.97, blue: 0.88, alpha: 1)
+            // Ambient: 150 (redup) → 900 (terang)
+            ambientNode?.light?.intensity    = 150 + b * 750
+            // Sun directional: 200 → 800
+            sunLightNode?.light?.intensity   = 200 + b * 600
+            // Fill: 100 → 400
+            fillLightNode?.light?.intensity  = 100 + b * 300
         } else {
-            light.intensity = 0
+            // Lampu mati — semua gelap, sisakan sedikit ambient supaya tidak pitch black
+            roomLightNode?.light?.intensity  = 0
+            ambientNode?.light?.intensity    = 80
+            sunLightNode?.light?.intensity   = 100
+            fillLightNode?.light?.intensity  = 60
         }
+
         SCNTransaction.commit()
     }
     
@@ -737,11 +1155,12 @@ class KostViewModel: ObservableObject {
             mat.transparency     = effective.glassTransparency
             SCNTransaction.commit()
         }
-        ambientNode?.light?.intensity = effective.isDay ? 1000 : 600
-        ambientNode?.light?.color     = UIColor(white: effective.ambientIntensity, alpha: 1)
+        // Weather hanya ubah winLight — room light dikontrol saklar dinding
         winLightNode?.light?.intensity = effective.code == 0 && effective.isDay ? 1200 :
-        effective.code <= 2 && effective.isDay ? 900 :
-        effective.isDay ? 600 : 300
+            effective.code <= 2 && effective.isDay ? 900 :
+            effective.isDay ? 600 : 300
+        // Terapkan room light sesuai state saklar saat ini
+        applyRoomLight()
         let isRain  = [51,53,55,61,63,65,80,81,82,95,96,99].contains(effective.code)
         let isHeavy = [65,80,81,82,95,96,99].contains(effective.code)
         let isStorm = [95,96,99].contains(effective.code)
@@ -1005,30 +1424,36 @@ class KostViewModel: ObservableObject {
         let hipY:    Float = 0.54
         let legOffX: Float = 0.07
         
-        func makeLeg(side: Float) -> SCNNode {
+        func makeLeg(side: Float) -> (hip: SCNNode, knee: SCNNode) {
             let pivot = SCNNode()
             pivot.position = SCNVector3(side * legOffX, hipY, 0)
-            // Paha (celana)
+            // Paha (celana) — tergantung dari hip pivot
             let thigh = geo(0.11, 0.26, 0.12, color: pants)
             thigh.position = SCNVector3(0, -0.13, 0)
             pivot.addChildNode(thigh)
-            // Betis (celana)
+            // Knee pivot — di ujung bawah paha
+            let kneePivot = SCNNode()
+            kneePivot.position = SCNVector3(0, -0.26, 0)
+            pivot.addChildNode(kneePivot)
+            // Betis (celana) — menggantung dari knee pivot
             let shin = geo(0.10, 0.24, 0.11, color: pants)
-            shin.position = SCNVector3(0, -0.35, 0)
-            pivot.addChildNode(shin)
+            shin.position = SCNVector3(0, -0.12, 0)
+            kneePivot.addChildNode(shin)
             // Sepatu
             let shoe = geo(0.11, 0.08, 0.17, color: shoes)
-            shoe.position = SCNVector3(0, -0.52, 0.02)
-            pivot.addChildNode(shoe)
-            return pivot
+            shoe.position = SCNVector3(0, -0.28, 0.02)
+            kneePivot.addChildNode(shoe)
+            return (pivot, kneePivot)
         }
-        
-        let lLegPivot = makeLeg(side: -1)
-        let rLegPivot = makeLeg(side:  1)
+
+        let (lLegPivot, lKneePivot) = makeLeg(side: -1)
+        let (rLegPivot, rKneePivot) = makeLeg(side:  1)
         root.addChildNode(lLegPivot)
         root.addChildNode(rLegPivot)
-        legLPivot = lLegPivot
-        legRPivot = rLegPivot
+        legLPivot  = lLegPivot
+        legRPivot  = rLegPivot
+        kneeLPivot = lKneePivot
+        kneeRPivot = rKneePivot
         
         return root
     }
@@ -1068,10 +1493,6 @@ class KostViewModel: ObservableObject {
                 leg.position = SCNVector3(Float(xm)*(Float(w)/2-0.05), 0.35, Float(zm)*(Float(d)/2-0.05))
                 root.addChildNode(leg)
             }}
-            let screen = SCNBox(width: 0.45, height: 0.28, length: 0.02, chamferRadius: 0.01)
-            screen.firstMaterial?.diffuse.contents = UIColor(red:0.10,green:0.10,blue:0.15,alpha:1)
-            let sNode = SCNNode(geometry: screen); sNode.position = SCNVector3(0.18, 1.06, d/2 - 0.04)
-            root.addChildNode(sNode)
             
         case .wardrobe:
             let body = SCNBox(width: w, height: 1.8, length: d, chamferRadius: 0.03)
@@ -1301,6 +1722,36 @@ class KostViewModel: ObservableObject {
             antNode.position = SCNVector3(Float(w)*0.42, 0.29, 0)
             antNode.eulerAngles.z = 0.2   // sedikit miring
             root.addChildNode(antNode)
+
+        case .chair:
+            let woodColor = UIColor(red:0.65, green:0.45, blue:0.22, alpha:1)
+            let cushionColor = UIColor(red:0.25, green:0.35, blue:0.55, alpha:1)
+            let legGeo = SCNBox(width: 0.04, height: 0.44, length: 0.04, chamferRadius: 0.01)
+            legGeo.firstMaterial?.diffuse.contents = woodColor
+            for (xm, zm) in [(-1.0,-1.0),(1.0,-1.0),(-1.0,1.0),(1.0,1.0)] {
+                let leg = SCNNode(geometry: legGeo)
+                leg.position = SCNVector3(Float(xm)*0.22, 0.22, Float(zm)*0.22)
+                root.addChildNode(leg)
+            }
+            // Seat cushion
+            let seatGeo = SCNBox(width: 0.52, height: 0.08, length: 0.50, chamferRadius: 0.03)
+            seatGeo.firstMaterial?.diffuse.contents = cushionColor
+            let seatNode = SCNNode(geometry: seatGeo); seatNode.position.y = 0.46
+            root.addChildNode(seatNode)
+            // Backrest frame
+            let backGeo = SCNBox(width: 0.48, height: 0.42, length: 0.06, chamferRadius: 0.02)
+            backGeo.firstMaterial?.diffuse.contents = cushionColor
+            let backNode = SCNNode(geometry: backGeo)
+            backNode.position = SCNVector3(0, 0.72, -0.22)
+            root.addChildNode(backNode)
+            // Back support bar
+            let barGeo = SCNBox(width: 0.04, height: 0.46, length: 0.04, chamferRadius: 0.01)
+            barGeo.firstMaterial?.diffuse.contents = woodColor
+            for xm in [-0.21, 0.21] as [Float] {
+                let bar = SCNNode(geometry: barGeo)
+                bar.position = SCNVector3(xm, 0.70, -0.22)
+                root.addChildNode(bar)
+            }
         }
 
         return root

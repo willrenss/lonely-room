@@ -268,18 +268,115 @@ struct KostSceneView: UIViewRepresentable {
         box(ft, wH, 0.10, color: wFrameColor, pos: SCNVector3(wRight, wCy, bFaceZ))
         box(ft*0.5, wH, 0.08, color: wFrameColor, pos: SCNVector3(wCx, wCy, bFaceZ))
 
-        // Window glass
-        let glassGeo = SCNBox(width: CGFloat(wW), height: CGFloat(wH), length: 0.008, chamferRadius: 0)
-        let glassMat = SCNMaterial()
-        glassMat.diffuse.contents  = UIColor(red:0.60, green:0.82, blue:0.98, alpha:1)
-        glassMat.transparency      = 0.72
-        glassMat.isDoubleSided     = true
-        glassMat.lightingModel     = .constant
-        glassGeo.materials = [glassMat]
-        let glassNode = SCNNode(geometry: glassGeo)
-        glassNode.position = SCNVector3(wCx, wCy, innerBack + 0.02)
-        scene.rootNode.addChildNode(glassNode)
-        vm.glassNode = glassNode
+        // Window glass — 2 panel kiri & kanan yang bisa digeser
+        let halfW = CGFloat(wW / 2) - 0.01
+        let glassMat: () -> SCNMaterial = {
+            let m = SCNMaterial()
+            m.diffuse.contents  = UIColor(red:0.60, green:0.82, blue:0.98, alpha:1)
+            m.transparency      = 0.72
+            m.isDoubleSided     = true
+            m.lightingModel     = .constant
+            return m
+        }
+        let glassGeoL = SCNBox(width: halfW, height: CGFloat(wH), length: 0.008, chamferRadius: 0)
+        glassGeoL.materials = [glassMat()]
+        let glassPanelL = SCNNode(geometry: glassGeoL)
+        glassPanelL.position = SCNVector3(wCx - Float(halfW)/2, wCy, innerBack + 0.02)
+        scene.rootNode.addChildNode(glassPanelL)
+        vm.windowPanelL = glassPanelL
+        vm.windowPanelLOriginX = glassPanelL.position.x
+
+        let glassGeoR = SCNBox(width: halfW, height: CGFloat(wH), length: 0.008, chamferRadius: 0)
+        glassGeoR.materials = [glassMat()]
+        let glassPanelR = SCNNode(geometry: glassGeoR)
+        glassPanelR.position = SCNVector3(wCx + Float(halfW)/2, wCy, innerBack + 0.02)
+        scene.rootNode.addChildNode(glassPanelR)
+        vm.windowPanelR = glassPanelR
+        vm.windowPanelROriginX = glassPanelR.position.x
+
+        // ── Curtains — kain tirai yang bisa berayun saat angin ──
+        // Tirai dipasang di kiri dan kanan jendela, pivot di ujung atas
+        // sehingga berayun realistis seperti tertiup angin.
+        let curtainColor = UIColor(red: 0.92, green: 0.86, blue: 0.76, alpha: 0.82)
+        let curtainW: Float = (wW / 2) + 0.05   // sedikit overlap ke tengah
+        let curtainH: Float = wH + 0.12          // sedikit lebih panjang dari jendela
+        let curtainZ = innerBack + 0.035          // sedikit di depan kaca jendela
+
+        // Fungsi bantu buat satu panel tirai dengan pivot di ujung atas
+        func makeCurtainPanel(isLeft: Bool) -> SCNNode {
+            // pivot node — posisinya di tepi luar tirai (tepi yang menempel kusen)
+            let pivot = SCNNode()
+            let edgeX: Float = isLeft ? wLeft : wRight
+            pivot.position = SCNVector3(edgeX, wTop, curtainZ)
+            pivot.name = isLeft ? "curtainPivotL" : "curtainPivotR"
+
+            // Geometri kain tirai — origin-nya di center,
+            // jadi kita geser child node ke bawah dan ke dalam
+            // agar tepi atas menyentuh pivot
+            _ = 6
+            let geo = SCNBox(
+                width: CGFloat(curtainW),
+                height: CGFloat(curtainH),
+                length: 0.012,
+                chamferRadius: 0.002
+            )
+            // Buat beberapa material untuk efek kain berlipat (fold gradient)
+            let mat = SCNMaterial()
+            mat.diffuse.contents  = curtainColor
+            mat.transparency      = 0.18           // tirai tipis / transparan ringan
+            mat.isDoubleSided     = true
+            mat.lightingModel     = .phong
+            mat.specular.contents = UIColor(white: 0.3, alpha: 1)
+            geo.materials = [mat]
+
+            let clothNode = SCNNode(geometry: geo)
+            // Geser ke bawah separuh tinggi dan ke arah tengah jendela
+            let halfW = curtainW / 2
+            let centerOffsetX: Float = isLeft ? halfW : -halfW
+            clothNode.position = SCNVector3(centerOffsetX, -curtainH / 2, 0)
+            clothNode.name = "curtainCloth"
+
+            // Tirai lipatan dekoratif: tambah strip vertikal untuk kesan kerutan
+            let foldCount = 3
+            for i in 0..<foldCount {
+                let foldGeo = SCNBox(width: 0.018, height: CGFloat(curtainH), length: 0.016, chamferRadius: 0.002)
+                let foldMat = SCNMaterial()
+                foldMat.diffuse.contents = UIColor(red: 0.78, green: 0.70, blue: 0.58, alpha: 0.60)
+                foldMat.isDoubleSided = true
+                foldMat.lightingModel = .phong
+                foldGeo.materials = [foldMat]
+                let foldNode = SCNNode(geometry: foldGeo)
+                let spread: Float = curtainW / Float(foldCount + 1)
+                let fxOffset: Float = isLeft
+                    ? -curtainW/2 + spread * Float(i + 1)
+                    : curtainW/2  - spread * Float(i + 1)
+                foldNode.position = SCNVector3(fxOffset, 0, 0.007)
+                clothNode.addChildNode(foldNode)
+            }
+
+            // Batang tirai (rod ring) atas
+            let ringGeo = SCNCylinder(radius: 0.014, height: CGFloat(curtainW))
+            ringGeo.firstMaterial?.diffuse.contents = UIColor(red: 0.55, green: 0.42, blue: 0.28, alpha: 1)
+            ringGeo.firstMaterial?.lightingModel = .lambert
+            let ringNode = SCNNode(geometry: ringGeo)
+            ringNode.eulerAngles.z = .pi / 2
+            ringNode.position = SCNVector3(centerOffsetX, 0.010, 0)
+            pivot.addChildNode(ringNode)
+
+            pivot.addChildNode(clothNode)
+            return pivot
+        }
+
+        let curtainPivotL = makeCurtainPanel(isLeft: true)
+        let curtainPivotR = makeCurtainPanel(isLeft: false)
+        scene.rootNode.addChildNode(curtainPivotL)
+        scene.rootNode.addChildNode(curtainPivotR)
+        vm.curtainL = curtainPivotL
+        vm.curtainR = curtainPivotR
+
+        // Simpan posisi world jendela — agak ke dalam ruangan dari dinding belakang
+        vm.windowWorldPos = SIMD3<Float>(wCx, 0, innerBack + 0.8)
+        vm.glassNode = glassPanelL   // backward compat
 
         // Outside weather scene
         let outsidePlane = SCNPlane(width: CGFloat(wW * 4.0), height: CGFloat(wH * 3.5))
@@ -328,7 +425,7 @@ struct KostSceneView: UIViewRepresentable {
         scene.rootNode.addChildNode(ambNode)
         vm.ambientNode = ambNode
 
-        // Main directional fill light (no shadow to avoid black screen on device)
+        // Main directional fill light
         let sun = SCNLight(); sun.type = .directional
         sun.color     = UIColor(red: 1.0, green: 0.97, blue: 0.90, alpha: 1)
         sun.intensity = 800
@@ -336,8 +433,9 @@ struct KostSceneView: UIViewRepresentable {
         let sunNode = SCNNode(); sunNode.light = sun
         sunNode.eulerAngles = SCNVector3(-Float.pi/4, Float.pi/6, 0)
         scene.rootNode.addChildNode(sunNode)
+        vm.sunLightNode = sunNode
 
-        // Secondary fill from behind camera so no surface goes pitch black
+        // Secondary fill
         let fill = SCNLight(); fill.type = .directional
         fill.color     = UIColor(white: 0.60, alpha: 1)
         fill.intensity = 400
@@ -345,6 +443,18 @@ struct KostSceneView: UIViewRepresentable {
         let fillNode = SCNNode(); fillNode.light = fill
         fillNode.eulerAngles = SCNVector3(Float.pi/6, -Float.pi/4, 0)
         scene.rootNode.addChildNode(fillNode)
+        vm.fillLightNode = fillNode
+
+        // Ceiling room light — dikontrol saklar dinding
+        let roomLight = SCNLight(); roomLight.type = .omni
+        roomLight.color     = UIColor(red: 1.0, green: 0.97, blue: 0.88, alpha: 1)
+        roomLight.intensity = 1000
+        roomLight.attenuationStartDistance = 0.5
+        roomLight.attenuationEndDistance   = 8.0
+        let roomLightNode = SCNNode(); roomLightNode.light = roomLight
+        roomLightNode.position = SCNVector3(0, roomH - 0.1, 0)   // tepat di plafon tengah
+        scene.rootNode.addChildNode(roomLightNode)
+        vm.roomLightNode = roomLightNode
 
         let winLight = SCNLight(); winLight.type = .omni
         winLight.color     = UIColor(red:1.0, green:0.97, blue:0.90, alpha:1)
@@ -355,51 +465,6 @@ struct KostSceneView: UIViewRepresentable {
         winLightNode.position = SCNVector3(wCx, wCy, innerBack + 0.5)
         scene.rootNode.addChildNode(winLightNode)
         vm.winLightNode = winLightNode
-
-        // ── Saklar lampu — dinding depan, kiri pintu ──
-        // Posisi: x = dLeft - 0.20, y = 1.25, z = innerFront (mepet dinding dalam)
-        let swX = dLeft - 0.20
-        let swY: Float = 1.25
-        let swZ = innerFront - 0.01  // sedikit masuk dari permukaan dinding
-
-        // Plat saklar (kuning gading)
-        let plateGeo = SCNBox(width: 0.09, height: 0.13, length: 0.015, chamferRadius: 0.008)
-        let plateMat = SCNMaterial()
-        plateMat.diffuse.contents  = UIColor(red:0.95, green:0.95, blue:0.88, alpha:1)
-        plateMat.lightingModel     = .phong
-        plateMat.specular.contents = UIColor(white:0.4, alpha:1)
-        plateGeo.materials = [plateMat]
-        let plateNode = SCNNode(geometry: plateGeo)
-        plateNode.position = SCNVector3(swX, swY, swZ)
-        plateNode.name = "lightSwitch"
-        scene.rootNode.addChildNode(plateNode)
-        vm.switchNode = plateNode
-
-        // Tombol saklar kecil di tengah plat
-        let btnGeo = SCNBox(width: 0.045, height: 0.065, length: 0.012, chamferRadius: 0.005)
-        let btnMat = SCNMaterial()
-        btnMat.diffuse.contents  = UIColor(red:0.90, green:0.88, blue:0.78, alpha:1)
-        btnMat.lightingModel     = .phong
-        btnGeo.materials = [btnMat]
-        let btnNode = SCNNode(geometry: btnGeo)
-        btnNode.position = SCNVector3(0, 0, 0.009)
-        plateNode.addChildNode(btnNode)
-
-        // Simpan posisi world saklar untuk proximity check
-        vm.switchWorldPos = SIMD3<Float>(swX, 0, swZ)
-
-        // ── Room light (lampu plafon) ──
-        let roomLight = SCNLight()
-        roomLight.type      = .omni
-        roomLight.color     = UIColor(red:1.0, green:0.95, blue:0.80, alpha:1)
-        roomLight.intensity = CGFloat(vm.roomBrightness) * 1200
-        roomLight.attenuationStartDistance = 1.0
-        roomLight.attenuationEndDistance   = 8.0
-        let roomLightNode = SCNNode()
-        roomLightNode.light    = roomLight
-        roomLightNode.position = SCNVector3(0, roomH - 0.2, 0)   // di plafon tengah ruangan
-        scene.rootNode.addChildNode(roomLightNode)
-        vm.roomLightNode = roomLightNode
 
         // Apply current time-of-day immediately so window isn't dark on first load
         DispatchQueue.main.async {

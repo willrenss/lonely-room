@@ -11,8 +11,9 @@ enum FurnitureType: String, CaseIterable {
     case rug       = "Karpet"
     case lamp      = "Lampu"
     case bag       = "Tas"
-    case wallClock = "Jam Dinding"
+    case wallClock   = "Jam Dinding"
     case musicPlayer = "Radio"
+    case chair       = "Kursi"
 
     var icon: String {
         switch self {
@@ -26,6 +27,7 @@ enum FurnitureType: String, CaseIterable {
         case .bag:       return "bag.fill"
         case .wallClock: return "clock.fill"
         case .musicPlayer: return "radio.fill"
+        case .chair:       return "chair.lounge.fill"
         }
     }
 
@@ -41,6 +43,7 @@ enum FurnitureType: String, CaseIterable {
         case .bag:       return Color(red:0.15, green:0.15, blue:0.55)
         case .wallClock: return Color(red:0.45, green:0.28, blue:0.12)
         case .musicPlayer: return Color(red:0.15, green:0.35, blue:0.55)
+        case .chair:       return Color(red:0.45, green:0.30, blue:0.15)
         }
     }
 
@@ -56,6 +59,7 @@ enum FurnitureType: String, CaseIterable {
         case .bag:       return CGSize(width:0.4, height:0.2)
         case .wallClock: return CGSize(width:0.35, height:0.05) // tipis karena di dinding
         case .musicPlayer: return CGSize(width:0.40, height:0.28)
+        case .chair:       return CGSize(width:0.55, height:0.55)
         }
     }
 
@@ -72,6 +76,7 @@ enum FurnitureType: String, CaseIterable {
         case .bag:       return 0.28
         case .wallClock: return 0.0
         case .musicPlayer: return 0.32
+        case .chair:       return 0.46
         }
     }
 
@@ -81,7 +86,7 @@ enum FurnitureType: String, CaseIterable {
     /// Items yang boleh ditaruh lebih dari satu instance di ruangan.
     var allowsMultiple: Bool {
         switch self {
-        case .lamp, .plant, .rug, .bag, .wallClock, .musicPlayer: return true
+        case .lamp, .plant, .rug, .bag, .wallClock, .musicPlayer, .chair: return true
         default: return false
         }
     }
@@ -95,7 +100,8 @@ enum FurnitureType: String, CaseIterable {
     /// (self must be larger and must be a surface-type item).
     func canStack(_ other: FurnitureType) -> Bool {
         // Wall-mounted, rug, lamp, tv cannot be bases for stacking
-        guard self != .rug, self != .lamp, self != .tv, self != .wallClock, self != .musicPlayer else { return false }
+        guard self != .rug, self != .lamp, self != .tv, self != .wallClock,
+              self != .musicPlayer, self != .chair else { return false }
         guard !other.isWallMounted else { return false }
         return stackSize > other.stackSize
     }

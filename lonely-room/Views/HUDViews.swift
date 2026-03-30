@@ -229,7 +229,7 @@ struct LightSwitchPanel: View {
                 Image(systemName: vm.isLightOn ? "lightbulb.fill" : "lightbulb.slash.fill")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(vm.isLightOn ? Color.yellow : Color.white.opacity(0.5))
-                Text("Lampu Kamar")
+                Text("Lampu Dinding")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
                 Spacer()
@@ -251,17 +251,17 @@ struct LightSwitchPanel: View {
             }
             if vm.isLightOn {
                 HStack(spacing: 8) {
-                    Image(systemName: "sun.min.fill")
+                    Image(systemName: "moon.fill")
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.6))
                     Slider(value: Binding(
                         get: { Double(vm.roomBrightness) },
                         set: { vm.setBrightness(Float($0)) }
-                    ), in: 0.05...1.0)
+                    ), in: 0.0...1.0)
                     .tint(.yellow)
                     Image(systemName: "sun.max.fill")
                         .font(.system(size: 13))
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(Color.yellow.opacity(0.9))
                 }
             }
         }

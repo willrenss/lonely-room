@@ -218,14 +218,89 @@ struct ContentView: View {
                             moveDX = 0; moveDY = 0
                             vm.stopWalking()
                         }
-                        .opacity(vm.isLyingDown ? 0.35 : 1.0)
-                        .allowsHitTesting(!vm.isLyingDown)
+                        .opacity(vm.isLyingDown || vm.isSitting ? 0.35 : 1.0)
+                        .allowsHitTesting(!vm.isLyingDown && !vm.isSitting)
                     }
                     .padding(.leading, 24)
 
                     Spacer()
 
                     VStack(spacing: 10) {
+                        // Tombol Jendela
+                        if vm.isNearWindow && !vm.isLyingDown && !vm.isSitting {
+                            Button {
+                                vm.toggleWindow()
+                            } label: {
+                                ZStack {
+                                    Capsule()
+                                        .fill(.ultraThinMaterial)
+                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
+                                        .frame(width: 130, height: 40)
+                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+                                    HStack(spacing: 6) {
+                                        Image(systemName: vm.isWindowOpen ? "window.casement.closed" : "window.casement")
+                                            .font(.system(size: 15, weight: .semibold))
+                                        Text(vm.isWindowOpen ? "Tutup Jendela" : "Buka Jendela")
+                                            .font(.system(size: 13, weight: .semibold))
+                                    }
+                                    .foregroundStyle(.white)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+
+                        // Tombol Lampu Tiang (on/off saja)
+                        if vm.isNearLamp && !vm.isLyingDown && !vm.isSitting {
+                            Button {
+                                vm.toggleLamp()
+                            } label: {
+                                ZStack {
+                                    Capsule()
+                                        .fill(.ultraThinMaterial)
+                                        .overlay(Capsule().stroke(
+                                            vm.isLampOn ? Color.yellow.opacity(0.6) : Color.white.opacity(0.3),
+                                            lineWidth: 1.5))
+                                        .frame(width: 130, height: 40)
+                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+                                    HStack(spacing: 6) {
+                                        Image(systemName: vm.isLampOn ? "lamp.floor.fill" : "lamp.floor")
+                                            .font(.system(size: 15, weight: .semibold))
+                                            .foregroundStyle(vm.isLampOn ? Color.yellow : Color.white)
+                                        Text(vm.isLampOn ? "Matikan Lampu" : "Nyalakan Lampu")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+
+                        // Tombol Duduk / Berdiri (kursi)
+                        if vm.isNearChair || vm.isSitting {
+                            Button {
+                                if vm.isSitting { vm.standUpChair() } else { vm.sitDown() }
+                            } label: {
+                                ZStack {
+                                    Capsule()
+                                        .fill(.ultraThinMaterial)
+                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
+                                        .frame(width: 110, height: 40)
+                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+                                    HStack(spacing: 6) {
+                                        Image(systemName: vm.isSitting ? "figure.stand" : "chair.lounge.fill")
+                                            .font(.system(size: 15, weight: .semibold))
+                                        Text(vm.isSitting ? "Berdiri" : "Duduk")
+                                            .font(.system(size: 13, weight: .semibold))
+                                    }
+                                    .foregroundStyle(.white)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+
                         // Tombol Rebahan / Berdiri
                         if vm.isNearBed || vm.isLyingDown {
                             Button {
@@ -251,6 +326,34 @@ struct ContentView: View {
                                 }
                             }
                             .buttonStyle(.plain)
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+
+                        // Tombol Siram Tanaman
+                        if vm.isNearPlant || vm.isWatering {
+                            Button {
+                                vm.waterPlant()
+                            } label: {
+                                ZStack {
+                                    Capsule()
+                                        .fill(.ultraThinMaterial)
+                                        .overlay(Capsule().stroke(
+                                            vm.isWatering ? Color.cyan.opacity(0.6) : Color.white.opacity(0.3),
+                                            lineWidth: 1.5))
+                                        .frame(width: 130, height: 40)
+                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+                                    HStack(spacing: 6) {
+                                        Image(systemName: vm.isWatering ? "drop.fill" : "drop")
+                                            .font(.system(size: 15, weight: .semibold))
+                                            .foregroundStyle(vm.isWatering ? Color.cyan : Color.white)
+                                        Text(vm.isWatering ? "Menyiram..." : "Siram Tanaman")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(vm.isWatering)
                             .transition(.scale(scale: 0.8).combined(with: .opacity))
                         }
 
@@ -288,10 +391,10 @@ struct ContentView: View {
                 VStack(spacing: 0) {
                     Spacer()
                     HStack {
-                        LightSwitchPanel(vm: vm)
-                            .padding(.leading, 20)
-                            .padding(.bottom, 192)
                         Spacer()
+                        LightSwitchPanel(vm: vm)
+                            .padding(.trailing, 20)
+                            .padding(.bottom, 192)
                     }
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
