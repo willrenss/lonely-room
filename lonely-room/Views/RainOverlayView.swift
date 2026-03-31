@@ -51,14 +51,17 @@ struct RainOverlayView: View {
             return Double(rng >> 11) / Double(1 << 53)
         }
 
+        let w = size.width
+        let h = size.height
+        
+        // Use single path to batch drawing instead of doing 200 separate ctx.stroke calls
+        var path = Path()
+
         for _ in 0..<dropCount {
             let xFrac   = next()           // 0..1 horizontal position
             let yOffset = next()           // stagger start position
             let speedVar = next() * 0.4 + 0.8   // ±20% speed variation
             let lenVar   = next() * 0.5 + 0.75  // length variation
-
-            let w = size.width
-            let h = size.height
 
             // y position scrolls with time, wraps around
             let rawY = (yOffset + time * speed * speedVar).truncatingRemainder(dividingBy: 1.0)
@@ -70,16 +73,15 @@ struct RainOverlayView: View {
             let from = CGPoint(x: x,            y: y)
             let to   = CGPoint(x: x + slant,    y: y + len)
 
-            var path = Path()
             path.move(to: from)
             path.addLine(to: to)
-
-            ctx.stroke(path,
-                       with: .color(.init(red: 0.72, green: 0.86, blue: 0.98,
-                                          opacity: alpha * lenVar)),
-                       style: StrokeStyle(lineWidth: lineW,
-                                          lineCap: .round))
         }
+        
+        ctx.stroke(path,
+                   with: .color(.init(red: 0.72, green: 0.86, blue: 0.98,
+                                      opacity: alpha)),
+                   style: StrokeStyle(lineWidth: lineW,
+                                      lineCap: .round))
 
         // Drizzle mist layer (light rain only)
         if !heavy {

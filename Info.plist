@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>lonely-room</string>
+	<string>Kost Simulator</string>
 	<key>CFBundleDisplayName</key>
-	<string>Lonely Room</string>
+	<string>Kost Simulator</string>
 	<key>CFBundleIdentifier</key>
 	<string>crossace.lonely-room</string>
 	<key>CFBundleVersion</key>
@@ -19,7 +19,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Digunakan untuk menampilkan cuaca sesuai lokasi kamu saat ini.</string>
 	<key>NSAppleMusicUsageDescription</key>
-	<string>Lonely Room butuh akses ke library musik kamu untuk memutar lagu di radio kamar.</string>
+	<string>Kost Simulator butuh akses ke library musik kamu untuk memutar lagu di radio kamar.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

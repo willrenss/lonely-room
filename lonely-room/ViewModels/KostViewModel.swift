@@ -74,6 +74,7 @@ class KostViewModel: ObservableObject {
     
     @Published var furnitureItems: [FurnitureItem] = []
     @Published var selectedFurniture: FurnitureItem?
+    @Published var isEditMode: Bool  = false
     @Published var pendingType: FurnitureType? = nil
     @Published var weather: WeatherCondition?
     @Published var pendingStackSource: FurnitureItem? = nil
@@ -125,6 +126,8 @@ class KostViewModel: ObservableObject {
     
     // MARK: - TPP Camera
     func updateCameraForTPP() {
+        if isLyingDown { return } // Do not update TPP when in FPP (lying down)
+        
         cameraPivot.position = SCNVector3(
             characterNode.position.x,
             0,
@@ -407,14 +410,18 @@ class KostViewModel: ObservableObject {
         charFacing = lyingFacing
         SCNTransaction.commit()
         
-        // Kamera bird-eye dari atas kasur
+        // Kamera First Person Perspective (FPP) saat rebahan
+        // Posisikan pivot kamera tepat di atas bantal/kepala karakter
         SCNTransaction.begin()
         SCNTransaction.animationDuration = 0.7
-        cameraNode.position    = SCNVector3(0, 2.8, 1.4)
-        cameraNode.eulerAngles = SCNVector3(-0.60, 0, 0)
-        SCNTransaction.commit()
+        cameraPivot.position = SCNVector3(charOriginX, mattressTopY + 0.35, charOriginZ)
+        cameraPivot.eulerAngles.y = SCNFloat(lyingFacing) // Menghadap ke arah kaki
         
-        updateCameraForTPP()
+        // Atur posisi lokal kamera di dalam pivot
+        cameraNode.position = SCNVector3(0, 0, 0) // Tepat di pivot (mata)
+        // Rotasi sumbu X positif untuk menengok ke atas (langit-langit)
+        cameraNode.eulerAngles = SCNVector3(Float.pi / 2.2, 0, 0) 
+        SCNTransaction.commit()
     }
     
     func standUp() {
@@ -448,6 +455,8 @@ class KostViewModel: ObservableObject {
         // Kembalikan posisi & sudut kamera normal
         SCNTransaction.begin()
         SCNTransaction.animationDuration = 0.5
+        yaw = charFacing
+        cameraPivot.eulerAngles.y = SCNFloat(yaw)
         cameraNode.position    = SCNVector3(0, 1.1, 2.0)
         cameraNode.eulerAngles = SCNVector3(-0.15, 0, 0)
         SCNTransaction.commit()
@@ -1326,12 +1335,23 @@ class KostViewModel: ObservableObject {
     
     func startRainAnimation(heavy: Bool, storm: Bool, timeOfDay: TimeOfDay, condition: WeatherCondition) {
         stopRainAnimation()
-        lastRainTimestamp = CACurrentMediaTime()
-        let link = CADisplayLink(target: RainAnimationTarget(vm: self, heavy: heavy, storm: storm,
-                                                             timeOfDay: timeOfDay, condition: condition),
-                                 selector: #selector(RainAnimationTarget.tick(_:)))
-        link.add(to: .main, forMode: .common)
-        rainDisplayLink = link
+        
+        // We only need to apply the static rainy weather texture once.
+        // Rendering rain on the CPU every frame was causing severe lag.
+        // Precipitation visualization is now handled entirely by the GPU
+        // using RainOverlayView (SwiftUI TimelineView) and SceneKit Particle Systems.
+        if let mat = outsideNode?.geometry?.firstMaterial {
+            let tex = WeatherTextureRenderer.draw(
+                condition: condition,
+                size: CGSize(width: 512, height: 320),
+                timeOfDay: timeOfDay
+            )
+            
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 2.0
+            mat.diffuse.contents = tex
+            SCNTransaction.commit()
+        }
     }
     
     func stopRainAnimation() {

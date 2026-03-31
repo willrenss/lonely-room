@@ -266,57 +266,9 @@ struct WeatherTextureRenderer {
                     end:   CGPoint(x:w/2, y:h), options:[])
             }
 
-            // Rain drops — animated via rainTime
-            if isRain {
-                let heavy2    = isHeavyRain
-                let dropCount = isStorm ? 120 : heavy2 ? 90 : 45
-                let speed     = isStorm ? 1.8  : heavy2 ? 1.4 : 0.85
-                let lenBase   = isStorm ? 28.0 : heavy2 ? 20.0 : 12.0
-                let slant     = isStorm ? -5.0 : heavy2 ? -4.0 : -2.5
-                let dropAlpha: CGFloat = isStorm ? 0.75 : heavy2 ? 0.60 : 0.45
-                let lineW     = isStorm ? 1.6 : heavy2 ? 1.2 : 0.85
+            // Rain drops inside texture are removed to optimize performance
+            // We now rely purely on SceneKit particle system and RainOverlayView.
 
-                var rng: UInt64 = 54321
-                func rd() -> Double {
-                    rng = rng &* 6364136223846793005 &+ 1442695040888963407
-                    return Double(rng >> 11) / Double(1 << 53)
-                }
-
-                r.setStrokeColor(UIColor(red:0.72, green:0.86, blue:0.98, alpha:dropAlpha).cgColor)
-
-                for _ in 0..<dropCount {
-                    let xFrac    = rd()
-                    let yStart   = rd()
-                    let speedVar = rd() * 0.4 + 0.8
-                    let lenVar   = rd() * 0.5 + 0.75
-
-                    let rawY = (yStart + rainTime * speed * speedVar).truncatingRemainder(dividingBy: 1.0)
-                    let dropX  = CGFloat(xFrac) * w
-                    let dropY  = CGFloat(rawY) * (h + CGFloat(lenBase)) - CGFloat(lenBase)
-                    let dropLen = CGFloat(lenBase * lenVar)
-
-                    r.setLineWidth(lineW * CGFloat(lenVar))
-                    r.move(to:    CGPoint(x: dropX,              y: dropY))
-                    r.addLine(to: CGPoint(x: dropX + CGFloat(slant), y: dropY + dropLen))
-                    r.strokePath()
-                }
-
-                // Puddle reflections on road
-                if heavy2 {
-                    var rng2: UInt64 = 9988
-                    func rd2() -> CGFloat {
-                        rng2 = rng2 &* 6364136223846793005 &+ 1442695040888963407
-                        return CGFloat(rng2 >> 33) / CGFloat(1 << 31)
-                    }
-                    r.setFillColor(UIColor(red:0.55,green:0.70,blue:0.88,alpha:0.30).cgColor)
-                    for _ in 0..<8 {
-                        let px = (w/2 - roadBotW/4) + rd2() * (roadBotW/2)
-                        let py = roadY + rd2() * (h - roadY)
-                        let pr = rd2() * 12 + 4
-                        r.fillEllipse(in: CGRect(x:px-pr,y:py-pr*0.3,width:pr*2,height:pr*0.6))
-                    }
-                }
-            }
 
             // Snow
             if isSnow {

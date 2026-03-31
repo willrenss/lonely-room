@@ -15,7 +15,7 @@ struct SplashView: View {
                 Image(systemName: "house.fill")
                     .font(.system(size: 64))
                     .foregroundStyle(.primary)
-                Text("Lonely Room")
+                Text("Kost Simulator")
                     .font(.title.bold())
                 ProgressView()
                     .padding(.top, 8)
@@ -381,11 +381,12 @@ struct ContentView: View {
                             .transition(.scale(scale: 0.8).combined(with: .opacity))
                         }
 
-                        // Tombol buka/tutup catalog
+                        // Tombol Edit Mode
                         Button {
                             withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                                showCatalog.toggle()
-                                if !showCatalog {
+                                vm.isEditMode.toggle()
+                                if !vm.isEditMode {
+                                    showCatalog = false
                                     vm.pendingType = nil
                                     vm.selectFurniture(nil)
                                 }
@@ -393,17 +394,43 @@ struct ContentView: View {
                         } label: {
                             ZStack {
                                 Circle()
-                                    .fill(.ultraThinMaterial)
+                                    .fill(vm.isEditMode ? AnyShapeStyle(Color.orange.opacity(0.9)) : AnyShapeStyle(.ultraThinMaterial))
                                     .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
                                     .frame(width: 58, height: 58)
                                     .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                Image(systemName: showCatalog ? "xmark" : "plus")
-                                    .font(.system(size: 22, weight: .semibold))
+                                Image(systemName: vm.isEditMode ? "lock.open.fill" : "lock.fill")
+                                    .font(.system(size: 20, weight: .semibold))
                                     .foregroundStyle(.white)
-                                    .rotationEffect(.degrees(showCatalog ? 0 : 0))
                             }
                         }
                         .buttonStyle(.plain)
+
+                        // Tombol buka/tutup catalog
+                        if vm.isEditMode {
+                            Button {
+                                withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                                    showCatalog.toggle()
+                                    if !showCatalog {
+                                        vm.pendingType = nil
+                                        vm.selectFurniture(nil)
+                                    }
+                                }
+                            } label: {
+                                ZStack {
+                                    Circle()
+                                        .fill(.ultraThinMaterial)
+                                        .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
+                                        .frame(width: 58, height: 58)
+                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+                                    Image(systemName: showCatalog ? "xmark" : "plus")
+                                        .font(.system(size: 22, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .rotationEffect(.degrees(showCatalog ? 0 : 0))
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
                     }
                     .padding(.trailing, 24)
                 }
