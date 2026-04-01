@@ -112,9 +112,10 @@ struct KostSceneView: UIViewRepresentable {
                 dragOffset = .zero
                 lastPanX = pt.x
                 
-                // Only allow dragging if we are in Edit Mode AND the user starts the pan on the ALREADY SELECTED furniture.
+                // Only allow dragging if we are in Edit Mode AND the user starts the pan on a furniture.
                 // Otherwise, they are just panning to rotate the camera.
-                if vm.isEditMode, let hit = vm.hitTestFurniture(at: pt), hit.id == vm.selectedFurniture?.id {
+                if vm.isEditMode, let hit = vm.hitTestFurniture(at: pt) {
+                    vm.selectFurniture(hit)
                     // Compute drag offset using the item's own Y plane
                     let itemY = hit.node.position.y
                     if let worldPos = vm.hitTestPlane(at: pt, y: itemY) {

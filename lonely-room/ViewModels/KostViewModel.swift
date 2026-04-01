@@ -137,9 +137,9 @@ class KostViewModel: ObservableObject {
     }
     
     /// Ideal camera distance from pivot (in local Z)
-    private let idealCameraZ: Float = 2.0
+    private var idealCameraZ: Float = 2.0
     /// Minimum camera distance (so it doesn't clip into character)
-    private let minCameraZ:   Float = 0.3
+    private var minCameraZ:   Float = 0.3
     
     /// Ray-cast from character's head toward the ideal camera position.
     /// If a wall is in the way, pull the camera in to just in front of it.
@@ -464,6 +464,30 @@ class KostViewModel: ObservableObject {
         updateCameraForTPP()
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.checkNearBed(); self.checkNearSwitch(); self.checkNearMusicPlayer() }
+    }
+    
+    // MARK: - Edit Mode
+    
+    func toggleEditMode() {
+        guard !isLyingDown && !isSitting else { return }
+        isEditMode.toggle()
+        
+        SCNTransaction.begin()
+        SCNTransaction.animationDuration = 0.5
+        SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        if isEditMode {
+            idealCameraZ = 0.15
+            minCameraZ   = 0.10
+            cameraNode.position = SCNVector3(0, 2.7, idealCameraZ)
+            cameraNode.eulerAngles = SCNVector3(-Float.pi / 2.3, 0, 0)
+        } else {
+            idealCameraZ = 2.0
+            minCameraZ   = 0.30
+            cameraNode.position = SCNVector3(0, 1.1, idealCameraZ)
+            cameraNode.eulerAngles = SCNVector3(-0.15, 0, 0)
+        }
+        SCNTransaction.commit()
+        updateCameraForTPP()
     }
     
     // MARK: - Door Proximity & Toggle
