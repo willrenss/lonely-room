@@ -1,0 +1,13 @@
+--- lonely-room/Views/SceneKitBridge.swift
++++ lonely-room/Views/SceneKitBridge.swift
+@@ -95,6 +95,10 @@
+             } else {
+                 if vm.isEditMode {
+                     let hit = vm.hitTestFurniture(at: pt)
+                     vm.selectFurniture(hit)
++                } else {
++                    if let hit = vm.hitTestFurniture(at: pt) {
++                        vm.interactWithPet(hit)
++                    }
+                 }
+             }

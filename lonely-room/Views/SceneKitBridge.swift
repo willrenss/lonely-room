@@ -96,6 +96,10 @@ struct KostSceneView: UIViewRepresentable {
                 if vm.isEditMode {
                     let hit = vm.hitTestFurniture(at: pt)
                     vm.selectFurniture(hit)
+                } else {
+                    if let hit = vm.hitTestFurniture(at: pt) {
+                        vm.interactWithPet(hit)
+                    }
                 }
             }
         }

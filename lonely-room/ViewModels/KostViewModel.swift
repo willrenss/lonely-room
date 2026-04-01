@@ -56,6 +56,14 @@ class KostViewModel: ObservableObject {
         return false
     }()
     @Published var isNearPlant       = false
+    @Published var isNearWardrobe    = false
+    @Published var characterGender   = UserDefaults.standard.string(forKey: "charGender") ?? "Male" {
+        didSet { UserDefaults.standard.set(characterGender, forKey: "charGender") }
+    }
+    @Published var characterStyleIndex    = UserDefaults.standard.integer(forKey: "charStyle") {
+        didSet { UserDefaults.standard.set(characterStyleIndex, forKey: "charStyle") }
+    }
+
     @Published var isWatering        = false
 
     weak var wateringCanNode: SCNNode?   // node kaleng di tangan kanan karakter
@@ -340,6 +348,8 @@ class KostViewModel: ObservableObject {
         checkNearDoor()
         checkNearLamp()
         checkNearPlant()
+        checkNearWardrobe()
+        checkNearWardrobe()
         
         // Karakter smooth rotate ke arah gerak
         if abs(fwdX + strX) > 0.001 || abs(fwdZ + strZ) > 0.001 {
@@ -360,6 +370,16 @@ class KostViewModel: ObservableObject {
         isWalking = false
         FootstepPlayer.shared.stop()
         stopWalkAnimation()
+        
+        checkNearDoor()
+        checkNearWindow()
+        checkNearLamp()
+        checkNearPlant()
+        checkNearBed()
+        checkNearSwitch()
+        checkNearMusicPlayer()
+        checkNearChair()
+        checkNearWardrobe()
     }
     
     // MARK: - Bed Proximity & Lie Down
@@ -420,7 +440,7 @@ class KostViewModel: ObservableObject {
         // Atur posisi lokal kamera di dalam pivot
         cameraNode.position = SCNVector3(0, 0, 0) // Tepat di pivot (mata)
         // Rotasi sumbu X positif untuk menengok ke atas (langit-langit)
-        cameraNode.eulerAngles = SCNVector3(Float.pi / 2.2, 0, 0) 
+        cameraNode.eulerAngles = SCNVector3(Float.pi / 2.2, 0, 0)
         SCNTransaction.commit()
     }
     
@@ -463,7 +483,12 @@ class KostViewModel: ObservableObject {
         
         updateCameraForTPP()
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.checkNearBed(); self.checkNearSwitch(); self.checkNearMusicPlayer() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            self.checkNearBed()
+            self.checkNearSwitch()
+            self.checkNearMusicPlayer()
+            self.checkNearWardrobe()
+        }
     }
     
     // MARK: - Edit Mode
@@ -650,6 +675,7 @@ class KostViewModel: ObservableObject {
             self.checkNearMusicPlayer()
             self.checkNearWindow()
             self.checkNearDoor()
+            self.checkNearWardrobe()
         }
     }
 
@@ -794,6 +820,16 @@ class KostViewModel: ObservableObject {
     }
 
     // MARK: - Plant Proximity & Watering
+
+    func checkNearWardrobe() {
+        let cx = Float(characterNode.position.x)
+        let cz = Float(characterNode.position.z)
+        let hit = furnitureItems.first(where: { $0.type == .wardrobe })
+        guard let p = hit else { isNearWardrobe = false; return }
+        let dx = cx - Float(p.node.position.x)
+        let dz = cz - Float(p.node.position.z)
+        isNearWardrobe = sqrt(dx*dx + dz*dz) < 1.4
+    }
 
     func checkNearPlant() {
         guard !isWatering else { return }
@@ -1115,6 +1151,84 @@ class KostViewModel: ObservableObject {
         item.node.addChildNode(outline)
     }
     
+    func interactWithPet(_ item: FurnitureItem) {
+        guard let petBody = item.node.childNode(withName: "petBody", recursively: false) else { return }
+        
+        if item.type == .cat {
+            petBody.removeAllActions()
+            // Pastikan posisi rotasi pet direset ke 0 sebelum digulirkan ulang supaya tidak aneh
+            petBody.runAction(SCNAction.move(to: SCNVector3(0, 0, 0), duration: 0.2))
+            petBody.runAction(SCNAction.rotateTo(x: 0, y: 0, z: 0, duration: 0.2))
+            
+            // Animasi berguling-guling manja di lantai tanpa tembus lantai
+            // moveBy menggunakan parent axis (Y dunia), sedangkan rotateBy menggunakan local axis.
+            let actRollOver = SCNAction.group([
+                SCNAction.rotateBy(x: 0, y: 0, z: .pi, duration: 0.45),
+                SCNAction.moveBy(x: 0, y: 0.14, z: 0, duration: 0.45)
+            ])
+            actRollOver.timingMode = .easeInEaseOut
+            
+            let actRollBack = SCNAction.group([
+                SCNAction.rotateBy(x: 0, y: 0, z: -.pi, duration: 0.45),
+                SCNAction.moveBy(x: 0, y: -0.14, z: 0, duration: 0.45)
+            ])
+            actRollBack.timingMode = .easeInEaseOut
+            
+            let restartIdle = SCNAction.run { node in
+                let idleRoll = SCNAction.sequence([
+                    SCNAction.wait(duration: Double.random(in: 3...8)),
+                    SCNAction.moveBy(x: 0.2, y: 0, z: 0.1, duration: 1.0),
+                    SCNAction.rotateBy(x: 0, y: 1.5, z: 0, duration: 0.3),
+                    SCNAction.wait(duration: 1.0),
+                    SCNAction.moveBy(x: -0.2, y: 0, z: -0.1, duration: 1.0),
+                    SCNAction.rotateBy(x: 0, y: -1.5, z: 0, duration: 0.3)
+                ])
+                node.runAction(.repeatForever(idleRoll))
+            }
+            
+            let rollSequence = SCNAction.sequence([
+                SCNAction.wait(duration: 0.2), // Wait reset
+                actRollOver,
+                SCNAction.wait(duration: 2.0),
+                actRollBack,
+                restartIdle
+            ])
+            
+            petBody.runAction(rollSequence)
+            
+        } else if item.type == .dog {
+            petBody.removeAllActions()
+            petBody.runAction(SCNAction.move(to: SCNVector3(0, 0, 0), duration: 0.2))
+            
+            // Animasi anjing melompat girang berputar
+            let jump = SCNAction.sequence([
+                SCNAction.moveBy(x: 0, y: 0.2, z: 0, duration: 0.2),
+                SCNAction.moveBy(x: 0, y: -0.2, z: 0, duration: 0.2)
+            ])
+            let spin = SCNAction.rotateBy(x: 0, y: 2 * .pi, z: 0, duration: 0.4)
+            
+            let restartIdle = SCNAction.run { node in
+                let jumpWalk = SCNAction.sequence([
+                    SCNAction.wait(duration: Double.random(in: 2...5)),
+                    SCNAction.moveBy(x: -0.15, y: 0, z: 0.15, duration: 0.8),
+                    SCNAction.moveBy(x: 0, y: 0.05, z: 0, duration: 0.15),
+                    SCNAction.moveBy(x: 0, y: -0.05, z: 0, duration: 0.15),
+                    SCNAction.wait(duration: 1.5),
+                    SCNAction.moveBy(x: 0.15, y: 0, z: -0.15, duration: 0.8)
+                ])
+                node.runAction(.repeatForever(jumpWalk))
+            }
+            
+            let actSeq = SCNAction.sequence([
+                SCNAction.wait(duration: 0.2),
+                SCNAction.group([jump, spin]),
+                restartIdle
+            ])
+            
+            petBody.runAction(actSeq)
+        }
+    }
+    
     func moveFurniture(_ item: FurnitureItem, to worldPos: SCNVector3) {
         guard item.stackedOnID == nil else { return }
         let clampedX = max(-2.5, min(2.5, Float(worldPos.x)))
@@ -1360,6 +1474,10 @@ class KostViewModel: ObservableObject {
     func startRainAnimation(heavy: Bool, storm: Bool, timeOfDay: TimeOfDay, condition: WeatherCondition) {
         stopRainAnimation()
         
+        // Unhide 3D rain particles out the window to replace the slow CPU texture
+        rainParticleNode?.isHidden = false
+        rainParticleNode?.particleSystems?.first?.birthRate = heavy ? 600 : 250
+        
         // We only need to apply the static rainy weather texture once.
         // Rendering rain on the CPU every frame was causing severe lag.
         // Precipitation visualization is now handled entirely by the GPU
@@ -1379,6 +1497,7 @@ class KostViewModel: ObservableObject {
     }
     
     func stopRainAnimation() {
+        rainParticleNode?.isHidden = true
         rainDisplayLink?.invalidate(); rainDisplayLink = nil; rainTimeOffset = 0
     }
     
@@ -1539,35 +1658,83 @@ class KostViewModel: ObservableObject {
     
     // MARK: - Build Character Node
     
+    func rebuildCharacterAppearance() {
+        guard let pNode = characterNode.childNode(withName: "character", recursively: false) else { return }
+        let currentPos = pNode.position
+        let currentRot = pNode.eulerAngles
+        pNode.removeFromParentNode()
+        
+        let newNode = buildCharacterNode()
+        newNode.position = currentPos
+        newNode.eulerAngles = currentRot
+        characterNode.addChildNode(newNode)
+    }
+
     func buildCharacterNode() -> SCNNode {
         let root = SCNNode()
         root.name = "character"
         
-        let skin  = UIColor(red: 0.95, green: 0.78, blue: 0.65, alpha: 1)
-        let shirt = UIColor(red: 0.25, green: 0.45, blue: 0.80, alpha: 1)
-        let pants = UIColor(red: 0.20, green: 0.22, blue: 0.35, alpha: 1)
-        let shoes = UIColor(red: 0.15, green: 0.10, blue: 0.08, alpha: 1)
-        let hair  = UIColor(red: 0.18, green: 0.12, blue: 0.08, alpha: 1)
+        let skin = UIColor(red: 0.95, green: 0.78, blue: 0.65, alpha: 1)
         
-        func geo(_ w: CGFloat, _ h: CGFloat, _ d: CGFloat, color: UIColor) -> SCNNode {
-            let g = SCNBox(width: w, height: h, length: d, chamferRadius: 0.025)
+        // Define color styles based on gender & styles
+        var shirtColor = UIColor(red: 0.25, green: 0.45, blue: 0.80, alpha: 1)
+        var pantsColor = UIColor(red: 0.20, green: 0.22, blue: 0.35, alpha: 1)
+        var shoesColor = UIColor(red: 0.15, green: 0.10, blue: 0.08, alpha: 1)
+        var hairColor  = UIColor(red: 0.18, green: 0.12, blue: 0.08, alpha: 1)
+        
+        if characterGender == "Perempuan" {
+            // Female presets
+            if characterStyleIndex == 0 {
+                shirtColor = UIColor(red: 0.85, green: 0.35, blue: 0.45, alpha: 1) // Pink
+                pantsColor = UIColor(red: 0.70, green: 0.70, blue: 0.75, alpha: 1) // Light Jeans
+                hairColor  = UIColor(red: 0.25, green: 0.15, blue: 0.05, alpha: 1) // Dark brown
+            } else if characterStyleIndex == 1 {
+                shirtColor = UIColor(red: 0.4, green: 0.2, blue: 0.6, alpha: 1) // Purple
+                pantsColor = UIColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1) // Black leggings
+                hairColor  = UIColor(red: 0.8, green: 0.6, blue: 0.2, alpha: 1) // Blonde
+            } else {
+                shirtColor = UIColor(red: 0.9, green: 0.8, blue: 0.2, alpha: 1) // Yellow
+                pantsColor = UIColor(red: 0.3, green: 0.4, blue: 0.3, alpha: 1) // Olive
+                hairColor  = UIColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1) // Black
+            }
+        } else {
+            // Male presets
+            if characterStyleIndex == 0 {
+                shirtColor = UIColor(red: 0.25, green: 0.45, blue: 0.80, alpha: 1) // Blue
+                pantsColor = UIColor(red: 0.20, green: 0.22, blue: 0.35, alpha: 1) // Dark navy
+                hairColor  = UIColor(red: 0.18, green: 0.12, blue: 0.08, alpha: 1) // Brown
+            } else if characterStyleIndex == 1 {
+                shirtColor = UIColor(red: 0.2, green: 0.6, blue: 0.3, alpha: 1) // Green
+                pantsColor = UIColor(red: 0.6, green: 0.5, blue: 0.4, alpha: 1) // Khaki
+                hairColor  = UIColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1) // Black
+            } else {
+                shirtColor = UIColor(red: 0.8, green: 0.2, blue: 0.2, alpha: 1) // Red
+                pantsColor = UIColor(red: 0.2, green: 0.2, blue: 0.2, alpha: 1) // Black
+                hairColor  = UIColor(red: 0.3, green: 0.15, blue: 0.05, alpha: 1) // Dark Auburn
+            }
+        }
+        
+        func geo(_ w: CGFloat, _ h: CGFloat, _ d: CGFloat, color: UIColor, r: CGFloat = 0.04) -> SCNNode {
+            let g = SCNBox(width: w, height: h, length: d, chamferRadius: r)
             g.firstMaterial?.diffuse.contents = color
             g.firstMaterial?.lightingModel = .lambert
             return SCNNode(geometry: g)
         }
         
         // ── Badan ──
-        let body = geo(0.30, 0.36, 0.16, color: shirt)
+        let body = geo(0.28, 0.35, 0.16, color: shirtColor, r: 0.06)
         body.position = SCNVector3(0, 0.72, 0)
         root.addChildNode(body)
         
         // ── Leher ──
-        let neck = geo(0.10, 0.08, 0.10, color: skin)
+        let neck = SCNNode(geometry: SCNCylinder(radius: 0.035, height: 0.08))
+        neck.geometry?.firstMaterial?.diffuse.contents = skin
+        neck.geometry?.firstMaterial?.lightingModel = .lambert
         neck.position = SCNVector3(0, 0.94, 0)
         root.addChildNode(neck)
         
         // ── Kepala ──
-        let headGeo = SCNBox(width: 0.24, height: 0.24, length: 0.22, chamferRadius: 0.05)
+        let headGeo = SCNBox(width: 0.22, height: 0.23, length: 0.22, chamferRadius: 0.08)
         headGeo.firstMaterial?.diffuse.contents = skin
         headGeo.firstMaterial?.lightingModel = .lambert
         let head = SCNNode(geometry: headGeo)
@@ -1575,22 +1742,88 @@ class KostViewModel: ObservableObject {
         root.addChildNode(head)
         
         // Rambut
-        let hairGeo = SCNBox(width: 0.25, height: 0.09, length: 0.23, chamferRadius: 0.03)
-        hairGeo.firstMaterial?.diffuse.contents = hair
-        hairGeo.firstMaterial?.lightingModel = .lambert
-        let hairNode = SCNNode(geometry: hairGeo)
-        hairNode.position = SCNVector3(0, 1.21, 0)
+        let hairNode = SCNNode()
+        
+        let topHairGeo = SCNBox(width: 0.24, height: 0.06, length: 0.24, chamferRadius: 0.03)
+        topHairGeo.firstMaterial?.diffuse.contents = hairColor
+        topHairGeo.firstMaterial?.lightingModel = .lambert
+        let topHair = SCNNode(geometry: topHairGeo)
+        topHair.position = SCNVector3(0, 1.19, 0)
+        hairNode.addChildNode(topHair)
+        
+        if characterGender == "Perempuan" {
+            // Rambut belakang panjang melebar
+            let backHairGeo = SCNBox(width: 0.26, height: 0.25, length: 0.08, chamferRadius: 0.04)
+            backHairGeo.firstMaterial?.diffuse.contents = hairColor
+            backHairGeo.firstMaterial?.lightingModel = .lambert
+            let backHair = SCNNode(geometry: backHairGeo)
+            backHair.position = SCNVector3(0, 1.05, -0.09)
+            hairNode.addChildNode(backHair)
+            
+            // Rambut Samping Kiri (menggantung menutupi telinga/samping kepala)
+            let sideHairGeo = SCNBox(width: 0.05, height: 0.22, length: 0.15, chamferRadius: 0.02)
+            sideHairGeo.firstMaterial?.diffuse.contents = hairColor
+            sideHairGeo.firstMaterial?.lightingModel = .lambert
+            
+            let leftHair = SCNNode(geometry: sideHairGeo)
+            leftHair.position = SCNVector3(-0.11, 1.06, 0.01)
+            hairNode.addChildNode(leftHair)
+            
+            let rightHair = SCNNode(geometry: sideHairGeo)
+            rightHair.position = SCNVector3(0.11, 1.06, 0.01)
+            hairNode.addChildNode(rightHair)
+            
+            // Poni
+            let bangsGeo = SCNBox(width: 0.24, height: 0.08, length: 0.05, chamferRadius: 0.02)
+            bangsGeo.firstMaterial?.diffuse.contents = hairColor
+            let bangs = SCNNode(geometry: bangsGeo)
+            bangs.position = SCNVector3(0, 1.16, 0.10)
+            hairNode.addChildNode(bangs)
+        } else {
+            // Rambut Samping Tipis Cowok (fade)
+            let sideHairGeo = SCNBox(width: 0.24, height: 0.08, length: 0.23, chamferRadius: 0.03)
+            sideHairGeo.firstMaterial?.diffuse.contents = hairColor
+            sideHairGeo.firstMaterial?.lightingModel = .lambert
+            let sideHair = SCNNode(geometry: sideHairGeo)
+            sideHair.position = SCNVector3(0, 1.14, -0.01)
+            hairNode.addChildNode(sideHair)
+            
+            // Poni rapi cowok
+            let bangsGeo = SCNBox(width: 0.23, height: 0.05, length: 0.04, chamferRadius: 0.02)
+            bangsGeo.firstMaterial?.diffuse.contents = hairColor
+            let bangs = SCNNode(geometry: bangsGeo)
+            bangs.position = SCNVector3(0, 1.16, 0.11)
+            hairNode.addChildNode(bangs)
+        }
         root.addChildNode(hairNode)
         
+        // Wajah (Mata, Pipi)
+        let faceNode = SCNNode()
+        faceNode.position = SCNVector3(0, 1.07, 0.115)
+        
         // Mata
-        for xOff: Float in [-0.06, 0.06] {
-            let eyeGeo = SCNSphere(radius: 0.022)
+        for xOff: Float in [-0.045, 0.045] {
+            let eyeGeo = SCNCapsule(capRadius: 0.015, height: 0.04)
             eyeGeo.firstMaterial?.diffuse.contents = UIColor(white: 0.1, alpha: 1)
-            eyeGeo.firstMaterial?.lightingModel = .constant
             let eye = SCNNode(geometry: eyeGeo)
-            eye.position = SCNVector3(xOff, 1.07, 0.115)
-            root.addChildNode(eye)
+            eye.position = SCNVector3(xOff, 0, 0)
+            faceNode.addChildNode(eye)
+            
+            // Blush
+            let blushGeo = SCNSphere(radius: 0.015)
+            blushGeo.firstMaterial?.diffuse.contents = UIColor(red: 0.9, green: 0.4, blue: 0.4, alpha: 0.6)
+            let blush = SCNNode(geometry: blushGeo)
+            blush.position = SCNVector3(xOff * 1.5, -0.04, 0)
+            faceNode.addChildNode(blush)
         }
+        root.addChildNode(faceNode)
+        
+        // Hidung (kecil)
+        let noseGeo = SCNSphere(radius: 0.008)
+        noseGeo.firstMaterial?.diffuse.contents = UIColor(red: 0.85, green: 0.65, blue: 0.55, alpha: 1)
+        let nose = SCNNode(geometry: noseGeo)
+        nose.position = SCNVector3(0, -0.02, 0.01)
+        faceNode.addChildNode(nose)
         
         // ── Lengan — pivot di bahu ──
         let shoulderY: Float = 0.88
@@ -1600,11 +1833,11 @@ class KostViewModel: ObservableObject {
             let pivot = SCNNode()
             pivot.position = SCNVector3(side * armOffX, shoulderY, 0)
             // Upper arm
-            let upper = geo(0.09, 0.20, 0.09, color: shirt)
+            let upper = geo(0.08, 0.20, 0.08, color: shirtColor, r: 0.04)
             upper.position = SCNVector3(0, -0.10, 0)
             pivot.addChildNode(upper)
             // Hand
-            let hand = geo(0.08, 0.09, 0.08, color: skin)
+            let hand = geo(0.07, 0.09, 0.07, color: skin, r: 0.035)
             hand.position = SCNVector3(0, -0.24, 0)
             pivot.addChildNode(hand)
             return (pivot, upper)
@@ -1624,20 +1857,20 @@ class KostViewModel: ObservableObject {
         func makeLeg(side: Float) -> (hip: SCNNode, knee: SCNNode) {
             let pivot = SCNNode()
             pivot.position = SCNVector3(side * legOffX, hipY, 0)
-            // Paha (celana) — tergantung dari hip pivot
-            let thigh = geo(0.11, 0.26, 0.12, color: pants)
+            // Paha (celana)
+            let thigh = geo(0.09, 0.26, 0.11, color: pantsColor, r: 0.04)
             thigh.position = SCNVector3(0, -0.13, 0)
             pivot.addChildNode(thigh)
-            // Knee pivot — di ujung bawah paha
+            // Knee pivot
             let kneePivot = SCNNode()
             kneePivot.position = SCNVector3(0, -0.26, 0)
             pivot.addChildNode(kneePivot)
-            // Betis (celana) — menggantung dari knee pivot
-            let shin = geo(0.10, 0.24, 0.11, color: pants)
+            // Betis (celana)
+            let shin = geo(0.09, 0.24, 0.10, color: pantsColor, r: 0.04)
             shin.position = SCNVector3(0, -0.12, 0)
             kneePivot.addChildNode(shin)
             // Sepatu
-            let shoe = geo(0.11, 0.08, 0.17, color: shoes)
+            let shoe = geo(0.10, 0.09, 0.16, color: shoesColor, r: 0.03)
             shoe.position = SCNVector3(0, -0.28, 0.02)
             kneePivot.addChildNode(shoe)
             return (pivot, kneePivot)
@@ -1949,6 +2182,199 @@ class KostViewModel: ObservableObject {
                 bar.position = SCNVector3(xm, 0.70, -0.22)
                 root.addChildNode(bar)
             }
+            
+        case .cat:
+            let catColor = UIColor(red: 0.9, green: 0.6, blue: 0.2, alpha: 1) // orange
+            let whiteColor = UIColor(white: 0.95, alpha: 1)
+            let blackColor = UIColor(white: 0.1, alpha: 1)
+            
+            let petContainer = SCNNode()
+            petContainer.name = "petBody"
+            root.addChildNode(petContainer)
+            
+            // Invisible Hitbox
+            let hitBox = SCNBox(width: 0.9, height: 0.9, length: 0.9, chamferRadius: 0)
+            hitBox.firstMaterial?.transparency = 0.0001
+            let hitNode = SCNNode(geometry: hitBox)
+            hitNode.position = SCNVector3(0, 0.45, 0)
+            root.addChildNode(hitNode)
+            
+            // Body
+            let bodyGeo = SCNCapsule(capRadius: 0.06, height: 0.22)
+            bodyGeo.firstMaterial?.diffuse.contents = catColor
+            let bodyNode = SCNNode(geometry: bodyGeo)
+            bodyNode.eulerAngles.x = .pi / 2
+            bodyNode.position = SCNVector3(0, 0.07, -0.02)
+            petContainer.addChildNode(bodyNode)
+            
+            // Head
+            let headGeo = SCNSphere(radius: 0.06)
+            headGeo.firstMaterial?.diffuse.contents = catColor
+            let headNode = SCNNode(geometry: headGeo)
+            headNode.position = SCNVector3(0, 0.13, 0.08)
+            petContainer.addChildNode(headNode)
+            
+            // Eyes
+            let eyeGeo = SCNSphere(radius: 0.008)
+            eyeGeo.firstMaterial?.diffuse.contents = blackColor
+            for dx in [-0.02, 0.02] as [Float] {
+                let eyeNode = SCNNode(geometry: eyeGeo)
+                eyeNode.position = SCNVector3(dx, 0.15, 0.135)
+                petContainer.addChildNode(eyeNode)
+            }
+            
+            // Muzzle
+            let snoutGeo = SCNSphere(radius: 0.03)
+            snoutGeo.firstMaterial?.diffuse.contents = whiteColor
+            let snoutNode = SCNNode(geometry: snoutGeo)
+            snoutNode.position = SCNVector3(0, 0.12, 0.13)
+            petContainer.addChildNode(snoutNode)
+
+            // Ears
+            let earGeo = SCNCone(topRadius: 0, bottomRadius: 0.025, height: 0.04)
+            earGeo.firstMaterial?.diffuse.contents = catColor
+            for dx in [-0.03, 0.03] as [Float] {
+                let eNode = SCNNode(geometry: earGeo)
+                eNode.position = SCNVector3(dx, 0.18, 0.07)
+                eNode.eulerAngles.x = -.pi/8
+                eNode.eulerAngles.z = dx < 0 ? .pi/12 : -.pi/12
+                petContainer.addChildNode(eNode)
+            }
+            
+            // Tail
+            let tailPivot = SCNNode() // Pivot for wagging
+            tailPivot.position = SCNVector3(0, 0.13, -0.12)
+            let tailGeo = SCNCapsule(capRadius: 0.015, height: 0.15)
+            tailGeo.firstMaterial?.diffuse.contents = catColor
+            let tailNode = SCNNode(geometry: tailGeo)
+            tailNode.position = SCNVector3(0, 0, -0.07) // Offset from pivot
+            tailNode.eulerAngles.x = -.pi / 6
+            tailPivot.addChildNode(tailNode)
+            petContainer.addChildNode(tailPivot)
+            
+            // Legs
+            let legGeo = SCNCapsule(capRadius: 0.015, height: 0.08)
+            legGeo.firstMaterial?.diffuse.contents = catColor
+            for param in [(-0.04, 0.05), (0.04, 0.05), (-0.04, -0.08), (0.04, -0.08)] as [(Float, Float)] {
+                let lNode = SCNNode(geometry: legGeo)
+                lNode.position = SCNVector3(param.0, 0.04, param.1)
+                petContainer.addChildNode(lNode)
+            }
+            
+            // Animations
+            let wag = SCNAction.sequence([
+                SCNAction.rotateBy(x: 0, y: 0.3, z: 0, duration: 0.4),
+                SCNAction.rotateBy(x: 0, y: -0.6, z: 0, duration: 0.8),
+                SCNAction.rotateBy(x: 0, y: 0.3, z: 0, duration: 0.4),
+                SCNAction.wait(duration: Double.random(in: 1...3))
+            ])
+            tailPivot.runAction(.repeatForever(wag))
+            
+            let roll = SCNAction.sequence([
+                SCNAction.wait(duration: Double.random(in: 3...8)),
+                SCNAction.moveBy(x: 0.2, y: 0, z: 0.1, duration: 1.0),
+                SCNAction.rotateBy(x: 0, y: 1.5, z: 0, duration: 0.3),
+                SCNAction.wait(duration: 1.0),
+                SCNAction.moveBy(x: -0.2, y: 0, z: -0.1, duration: 1.0),
+                SCNAction.rotateBy(x: 0, y: -1.5, z: 0, duration: 0.3)
+            ])
+            petContainer.runAction(.repeatForever(roll))
+            
+        case .dog:
+            let dogColor = UIColor(red: 0.45, green: 0.3, blue: 0.15, alpha: 1) // brown
+            let darkBrown = UIColor(red: 0.25, green: 0.15, blue: 0.05, alpha: 1)
+            let blackColor = UIColor(white: 0.1, alpha: 1)
+            
+            let petContainer = SCNNode()
+            petContainer.name = "petBody"
+            root.addChildNode(petContainer)
+            
+            // Invisible Hitbox
+            let hitBox = SCNBox(width: 0.9, height: 0.9, length: 0.9, chamferRadius: 0)
+            hitBox.firstMaterial?.transparency = 0.0001
+            let hitNode = SCNNode(geometry: hitBox)
+            hitNode.position = SCNVector3(0, 0.45, 0)
+            root.addChildNode(hitNode)
+            
+            // Body
+            let bodyGeo = SCNCapsule(capRadius: 0.08, height: 0.30)
+            bodyGeo.firstMaterial?.diffuse.contents = dogColor
+            let bodyNode = SCNNode(geometry: bodyGeo)
+            bodyNode.eulerAngles.x = .pi / 2
+            bodyNode.position = SCNVector3(0, 0.12, -0.02)
+            petContainer.addChildNode(bodyNode)
+            
+            // Head
+            let headGeo = SCNSphere(radius: 0.08)
+            headGeo.firstMaterial?.diffuse.contents = dogColor
+            let headNode = SCNNode(geometry: headGeo)
+            headNode.position = SCNVector3(0, 0.22, 0.12)
+            petContainer.addChildNode(headNode)
+            
+            // Eyes
+            let eyeGeo = SCNSphere(radius: 0.01)
+            eyeGeo.firstMaterial?.diffuse.contents = blackColor
+            for dx in [-0.03, 0.03] as [Float] {
+                let eyeNode = SCNNode(geometry: eyeGeo)
+                eyeNode.position = SCNVector3(dx, 0.25, 0.18)
+                petContainer.addChildNode(eyeNode)
+            }
+            
+            // Snout
+            let snoutGeo = SCNCapsule(capRadius: 0.04, height: 0.10)
+            snoutGeo.firstMaterial?.diffuse.contents = darkBrown
+            let snoutNode = SCNNode(geometry: snoutGeo)
+            snoutNode.eulerAngles.x = .pi / 2
+            snoutNode.position = SCNVector3(0, 0.19, 0.18)
+            petContainer.addChildNode(snoutNode)
+            
+            // Ears (droopy)
+            let earGeo = SCNCapsule(capRadius: 0.02, height: 0.10)
+            earGeo.firstMaterial?.diffuse.contents = darkBrown
+            for dx in [-0.07, 0.07] as [Float] {
+                let eNode = SCNNode(geometry: earGeo)
+                eNode.position = SCNVector3(dx, 0.18, 0.10)
+                eNode.eulerAngles.z = dx < 0 ? .pi/8 : -.pi/8
+                petContainer.addChildNode(eNode)
+            }
+            
+            // Tail
+            let tailPivot = SCNNode()
+            tailPivot.position = SCNVector3(0, 0.16, -0.17)
+            let tailGeo = SCNCapsule(capRadius: 0.02, height: 0.12)
+            tailGeo.firstMaterial?.diffuse.contents = darkBrown
+            let tailNode = SCNNode(geometry: tailGeo)
+            tailNode.position = SCNVector3(0, 0, -0.06)
+            tailNode.eulerAngles.x = .pi / 4
+            tailPivot.addChildNode(tailNode)
+            petContainer.addChildNode(tailPivot)
+            
+            // Legs
+            let legGeo = SCNCapsule(capRadius: 0.025, height: 0.14)
+            legGeo.firstMaterial?.diffuse.contents = dogColor
+            for param in [(-0.05, 0.08), (0.05, 0.08), (-0.05, -0.10), (0.05, -0.10)] as [(Float, Float)] {
+                let lNode = SCNNode(geometry: legGeo)
+                lNode.position = SCNVector3(param.0, 0.07, param.1)
+                petContainer.addChildNode(lNode)
+            }
+            
+            // Animations
+            let happyWag = SCNAction.sequence([
+                SCNAction.rotateBy(x: 0, y: 0.5, z: 0, duration: 0.15),
+                SCNAction.rotateBy(x: 0, y: -1.0, z: 0, duration: 0.3),
+                SCNAction.rotateBy(x: 0, y: 0.5, z: 0, duration: 0.15)
+            ])
+            tailPivot.runAction(.repeatForever(happyWag))
+            
+            let jumpWalk = SCNAction.sequence([
+                SCNAction.wait(duration: Double.random(in: 2...5)),
+                SCNAction.moveBy(x: -0.15, y: 0, z: 0.15, duration: 0.8),
+                SCNAction.moveBy(x: 0, y: 0.05, z: 0, duration: 0.15),
+                SCNAction.moveBy(x: 0, y: -0.05, z: 0, duration: 0.15),
+                SCNAction.wait(duration: 1.5),
+                SCNAction.moveBy(x: 0.15, y: 0, z: -0.15, duration: 0.8)
+            ])
+            petContainer.runAction(.repeatForever(jumpWalk))
         }
 
         return root

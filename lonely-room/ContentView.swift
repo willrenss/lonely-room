@@ -32,6 +32,83 @@ struct SplashView: View {
     }
 }
 
+// MARK: - Wardrobe Customizer View
+struct WardrobeCustomizerView: View {
+    @ObservedObject var vm: KostViewModel
+    var onDismiss: () -> Void
+    
+    var body: some View {
+        VStack(spacing: 20) {
+            HStack {
+                Text("Lemari Pakaian")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+            }
+            
+            // Gender Picker
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Gender").font(.caption).foregroundStyle(.white.opacity(0.7))
+                Picker("Gender", selection: $vm.characterGender) {
+                    Text("Laki-laki").tag("Male")
+                    Text("Perempuan").tag("Perempuan")
+                }
+                .pickerStyle(.segmented)
+                .colorScheme(.dark)
+                .onChange(of: vm.characterGender) { _ in
+                    vm.rebuildCharacterAppearance()
+                }
+            }
+            
+            // Style Picker
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Gaya Pakaian").font(.caption).foregroundStyle(.white.opacity(0.7))
+                HStack(spacing: 12) {
+                    ForEach(0..<3) { i in
+                        Button {
+                            vm.characterStyleIndex = i
+                            vm.rebuildCharacterAppearance()
+                        } label: {
+                            Circle()
+                                .fill(styleColor(for: i))
+                                .frame(width: 40, height: 40)
+                                .overlay(
+                                    Circle().stroke(vm.characterStyleIndex == i ? Color.white : Color.clear, lineWidth: 3)
+                                )
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.white.opacity(0.2), lineWidth: 1))
+        .shadow(color: .black.opacity(0.3), radius: 12, x: 0, y: 6)
+        .padding(.horizontal, 32)
+    }
+    
+    func styleColor(for index: Int) -> Color {
+        if vm.characterGender == "Perempuan" {
+            switch index {
+            case 0: return Color(red: 0.85, green: 0.35, blue: 0.45)
+            case 1: return Color(red: 0.4, green: 0.2, blue: 0.6)
+            default: return Color(red: 0.9, green: 0.8, blue: 0.2)
+            }
+        } else {
+            switch index {
+            case 0: return Color(red: 0.25, green: 0.45, blue: 0.80)
+            case 1: return Color(red: 0.2, green: 0.6, blue: 0.3)
+            default: return Color(red: 0.8, green: 0.2, blue: 0.2)
+            }
+        }
+    }
+}
+
 // MARK: - Content View
 struct ContentView: View {
     @StateObject private var vm             = KostViewModel()
@@ -43,6 +120,7 @@ struct ContentView: View {
 
     @State private var showCatalog      = false
     @State private var catalogWasOpen   = false
+    @State private var showWardrobe     = false
 
     @State private var currentTime = Date()
     @State private var lastTODHour = Calendar.current.component(.hour, from: Date())
@@ -107,6 +185,10 @@ struct ContentView: View {
         ZStack {
             // ── Scene ──
             KostSceneView(vm: vm)
+                .ignoresSafeArea()
+
+            // ── Weather Overlays ──
+            RainOverlayView(condition: vm.weather)
                 .ignoresSafeArea()
 
             // ── HUD: Weather (kiri atas) & Jam (kanan atas) ──
@@ -226,6 +308,32 @@ struct ContentView: View {
                     Spacer()
 
                     VStack(spacing: 10) {
+                        // Tombol Buka Lemari / Customizer
+                        if vm.isNearWardrobe && !vm.isLyingDown && !vm.isSitting {
+                            Button {
+                                withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                                    showWardrobe = true
+                                }
+                            } label: {
+                                ZStack {
+                                    Capsule()
+                                        .fill(.ultraThinMaterial)
+                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
+                                        .frame(width: 130, height: 40)
+                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "tshirt.fill")
+                                            .font(.system(size: 15, weight: .semibold))
+                                        Text("Ganti Baju")
+                                            .font(.system(size: 13, weight: .semibold))
+                                    }
+                                    .foregroundStyle(.white)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+
                         // Tombol Pintu
                         if vm.isNearDoor && !vm.isLyingDown && !vm.isSitting {
                             Button {
@@ -469,6 +577,20 @@ struct ContentView: View {
                 .transition(.move(edge: .leading).combined(with: .opacity))
                 .allowsHitTesting(true)
                 .animation(.spring(response: 0.35, dampingFraction: 0.75), value: vm.isNearMusicPlayer)
+            }
+            
+            // ── Wardrobe Panel Overlay ──
+            if showWardrobe {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation { showWardrobe = false }
+                    }
+                
+                WardrobeCustomizerView(vm: vm) {
+                    withAnimation { showWardrobe = false }
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
     }
