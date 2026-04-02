@@ -2,7 +2,7 @@ import SwiftUI
 import SceneKit
 
 // MARK: - Furniture Type
-enum FurnitureType: String, CaseIterable {
+enum FurnitureType: String, CaseIterable, Codable {
     case bed       = "Kasur"
     case desk      = "Meja"
     case wardrobe  = "Lemari"
@@ -16,6 +16,9 @@ enum FurnitureType: String, CaseIterable {
     case chair       = "Kursi"
     case cat         = "Kucing"
     case dog         = "Anjing"
+    case customImage = "Foto / Poster"
+    case custom3D    = "Scan 3D Objek"
+    case aiGenerated = "Buat AI 3D"
 
     var icon: String {
         switch self {
@@ -30,8 +33,11 @@ enum FurnitureType: String, CaseIterable {
         case .wallClock: return "clock.fill"
         case .musicPlayer: return "radio.fill"
         case .chair:       return "chair.lounge.fill"
-        case .cat:       return "pawprint.fill"
-        case .dog:       return "dog.fill"
+        case .cat:         return "pawprint.fill"
+        case .dog:         return "dog.fill"
+        case .customImage: return "camera.fill"
+        case .custom3D:    return "arkit"
+        case .aiGenerated: return "sparkles"
         }
     }
 
@@ -48,8 +54,11 @@ enum FurnitureType: String, CaseIterable {
         case .wallClock: return Color(red:0.45, green:0.28, blue:0.12)
         case .musicPlayer: return Color(red:0.15, green:0.35, blue:0.55)
         case .chair:       return Color(red:0.45, green:0.30, blue:0.15)
-        case .cat:       return Color.orange
-        case .dog:       return Color.brown
+        case .cat:         return Color.orange
+        case .dog:         return Color.brown
+        case .customImage: return Color.purple
+        case .custom3D:    return Color(red:0.10, green:0.75, blue:0.85)
+        case .aiGenerated: return Color.purple
         }
     }
 
@@ -66,12 +75,14 @@ enum FurnitureType: String, CaseIterable {
         case .wallClock: return CGSize(width:0.35, height:0.05) // tipis karena di dinding
         case .musicPlayer: return CGSize(width:0.40, height:0.28)
         case .chair:       return CGSize(width:0.55, height:0.55)
-        case .cat:       return CGSize(width:0.3, height:0.3)
-        case .dog:       return CGSize(width:0.4, height:0.6)
+        case .cat:         return CGSize(width:0.3, height:0.3)
+        case .dog:         return CGSize(width:0.4, height:0.6)
+        case .customImage: return CGSize(width:0.6, height:0.02)
+        case .custom3D:    return CGSize(width:0.4, height:0.4)
+        case .aiGenerated: return CGSize(width:0.4, height:0.4)
         }
     }
 
-    /// The Y height of the top surface of this furniture (where another item sits).
     var topHeight: Float {
         switch self {
         case .bed:       return 0.48
@@ -85,33 +96,30 @@ enum FurnitureType: String, CaseIterable {
         case .wallClock: return 0.0
         case .musicPlayer: return 0.32
         case .chair:       return 0.46
-        case .cat:       return 0.2
-        case .dog:       return 0.3
+        case .cat:         return 0.2
+        case .dog:         return 0.3
+        case .customImage: return 0.6
+        case .custom3D:    return 0.4
+        case .aiGenerated: return 0.4
         }
     }
 
-    /// Wall-mounted items need special placement logic.
     var isWallMounted: Bool { self == .wallClock }
 
-    /// Items yang boleh ditaruh lebih dari satu instance di ruangan.
     var allowsMultiple: Bool {
         switch self {
-        case .lamp, .plant, .rug, .bag, .wallClock, .musicPlayer, .chair, .cat, .dog: return true
+        case .lamp, .plant, .rug, .bag, .wallClock, .musicPlayer, .chair, .cat, .dog, .customImage, .custom3D, .aiGenerated: return true
         default: return false
         }
     }
 
-    /// Footprint area (width * depth) used to compare sizes for stacking eligibility.
     var stackSize: Float {
         Float(footprint.width) * Float(footprint.height)
     }
 
-    /// Returns true if `self` can have `other` stacked on top of it
-    /// (self must be larger and must be a surface-type item).
     func canStack(_ other: FurnitureType) -> Bool {
-        // Wall-mounted, rug, lamp, tv, pets cannot be bases for stacking
         guard self != .rug, self != .lamp, self != .tv, self != .wallClock,
-              self != .musicPlayer, self != .chair, self != .cat, self != .dog else { return false }
+              self != .musicPlayer, self != .chair, self != .cat, self != .dog, self != .customImage, self != .custom3D, self != .aiGenerated else { return false }
         guard !other.isWallMounted else { return false }
         return stackSize > other.stackSize
     }
@@ -119,14 +127,13 @@ enum FurnitureType: String, CaseIterable {
 
 // MARK: - Furniture Item
 struct FurnitureItem {
-    let id   = UUID()
+    let id   = UUID() // Always unique
     let type: FurnitureType
     var position: SCNVector3
     var node: SCNNode
-    /// UUID asli dari save data (untuk restore relasi stacking saat load)
     var savedID: UUID? = nil
-    /// ID of the item this is stacked on top of (nil = on the floor).
     var stackedOnID: UUID? = nil
-    /// ID of the item sitting on top of this one (nil = nothing stacked).
     var stackedItemID: UUID? = nil
+    var customImagePath: String? = nil // Local path for custom photo
+    var custom3DPath: String? = nil    // Local path for 3D scan USDZ
 }

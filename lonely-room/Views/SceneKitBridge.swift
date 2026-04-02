@@ -20,6 +20,7 @@ struct KostSceneView: UIViewRepresentable {
         vm.spawnDefaultFurniture()          // adds characterNode + cameraNode to scene
 
         view.pointOfView = vm.cameraNode    // set AFTER cameraNode is in scene tree
+
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
         tap.delegate = context.coordinator
@@ -103,12 +104,11 @@ struct KostSceneView: UIViewRepresentable {
                 }
             }
         }
-
+        
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
-            guard vm.pendingType == nil else { return }
             guard let view = gesture.view as? SCNView else { return }
             let pt = gesture.location(in: view)
-
+            
             switch gesture.state {
             case .began:
                 panIsDragging = false
@@ -264,7 +264,7 @@ struct KostSceneView: UIViewRepresentable {
         handleGeo.firstMaterial?.diffuse.contents = UIColor(red:0.80, green:0.68, blue:0.28, alpha:1)
         let handleNode = SCNNode(geometry: handleGeo)
         handleNode.eulerAngles.z = .pi/2
-        handleNode.position = SCNVector3(doorWidth - 0.12, 1.0, 0.04) 
+        handleNode.position = SCNVector3(doorWidth - 0.12, 1.0, 0.04)
         doorPivot.addChildNode(handleNode)
         
         let handleNode2 = handleNode.clone()
@@ -518,7 +518,7 @@ struct KostSceneView: UIViewRepresentable {
         let rainNode = SCNNode()
         rainNode.addParticleSystem(rainPS)
         // Posisi tepat di atas jendela, di depan outside plane
-        rainNode.position = SCNVector3(wCx, wTop + 1.2, innerBack - wT - 0.15)
+        rainNode.position = SCNVector3(wCx, wTop + 0.4, innerBack - wT - 0.15)
         rainNode.isHidden = true
         scene.rootNode.addChildNode(rainNode)
         vm.rainParticleNode = rainNode
@@ -601,29 +601,30 @@ struct KostSceneView: UIViewRepresentable {
         // ── Saklar lampu — dinding depan, kanan pintu ──
         let swX = dRight + 0.20
         let swY: Float = 1.25
-        let swZ = innerFront - 0.01  
+        let swZ = innerFront - 0.01
 
-        let plateGeo = SCNBox(width: 0.09, height: 0.13, length: 0.015, chamferRadius: 0.008)
+        // Plat saklar (wall plate)
+        let plateGeo = SCNBox(width: 0.08, height: 0.12, length: 0.01, chamferRadius: 0.005)
         let plateMat = SCNMaterial()
-        plateMat.diffuse.contents  = UIColor(red:0.95, green:0.95, blue:0.88, alpha:1)
-        plateMat.lightingModel     = .phong
-        plateMat.specular.contents = UIColor(white:0.4, alpha:1)
+        plateMat.diffuse.contents = UIColor(white: 0.95, alpha: 1)
+        plateMat.lightingModel = .lambert
         plateGeo.materials = [plateMat]
         let plateNode = SCNNode(geometry: plateGeo)
         plateNode.position = SCNVector3(swX, swY, swZ)
         plateNode.name = "lightSwitch"
         scene.rootNode.addChildNode(plateNode)
-        vm.switchNode = plateNode
-
-        let btnGeo = SCNBox(width: 0.045, height: 0.065, length: 0.012, chamferRadius: 0.005)
+        
+        // Tombol saklar (switch button)
+        let btnGeo = SCNBox(width: 0.03, height: 0.05, length: 0.005, chamferRadius: 0.002)
         let btnMat = SCNMaterial()
-        btnMat.diffuse.contents  = UIColor(red:0.90, green:0.88, blue:0.78, alpha:1)
-        btnMat.lightingModel     = .phong
+        btnMat.diffuse.contents = vm.isLightOn ? UIColor(red:0.95, green:0.95, blue:0.88, alpha:1) : UIColor(red:0.30, green:0.30, blue:0.30, alpha:1)
+        btnMat.emission.contents = vm.isLightOn ? UIColor(red:1.0, green:0.97, blue:0.80, alpha:0.6) : UIColor.black
         btnGeo.materials = [btnMat]
         let btnNode = SCNNode(geometry: btnGeo)
-        btnNode.position = SCNVector3(0, 0, 0.009)
+        btnNode.position = SCNVector3(0, 0, 0.005)
         plateNode.addChildNode(btnNode)
-
+        
+        vm.switchNode = plateNode
         vm.switchWorldPos = SIMD3<Float>(swX, 0, swZ)
 
         // Apply current time-of-day immediately so window isn't dark on first load

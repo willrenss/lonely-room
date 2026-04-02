@@ -1,0 +1,5 @@
+@@ -105,4 +110,4 @@
+         guard !other.isWallMounted else { return false }
+         return stackSize > other.stackSize
+     }
+ }

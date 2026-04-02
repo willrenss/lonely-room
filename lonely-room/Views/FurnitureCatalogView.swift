@@ -1,9 +1,14 @@
 import SwiftUI
+import PhotosUI
 
 // MARK: - Furniture Catalog Panel
 struct FurnitureCatalogView: View {
     @ObservedObject var vm: KostViewModel
     var onDismiss: (() -> Void)? = nil
+    var onOpenScanner: (() -> Void)? = nil
+    var onOpenAIGenerator: (() -> Void)? = nil
+
+    @State private var isShowingPhotoPicker = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -12,7 +17,17 @@ struct FurnitureCatalogView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(FurnitureType.allCases, id: \.self) { ft in
-                        FurnitureTile(ft: ft, vm: vm)
+                        FurnitureTile(ft: ft, vm: vm) {
+                            if ft == .customImage {
+                                isShowingPhotoPicker = true
+                            } else if ft == .custom3D {
+                                onOpenScanner?()
+                            } else if ft == .aiGenerated {
+                                onOpenAIGenerator?()
+                            } else {
+                                vm.startPlacing(type: ft)
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 12)
@@ -36,6 +51,18 @@ struct FurnitureCatalogView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(Color.white.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 4)
+        .sheet(isPresented: $isShowingPhotoPicker) {
+            CustomPhotoPickerView { img in
+                isShowingPhotoPicker = false
+                guard let image = img else { return }
+                let filename = UUID().uuidString + ".jpg"
+                let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(filename)
+                if let data = image.jpegData(compressionQuality: 0.8) {
+                    try? data.write(to: url)
+                    vm.startPlacing(type: .customImage, imagePath: filename)
+                }
+            }
+        }
     }
 }
 
@@ -43,6 +70,7 @@ struct FurnitureCatalogView: View {
 private struct FurnitureTile: View {
     let ft: FurnitureType
     @ObservedObject var vm: KostViewModel
+    let action: () -> Void
 
     private var isSelected: Bool { vm.pendingType == ft }
     /// Owned = sudah ada DAN tidak boleh multiple → tile disabled dengan checkmark
@@ -50,7 +78,7 @@ private struct FurnitureTile: View {
 
     var body: some View {
         Button {
-            if !isOwned { vm.startPlacing(type: ft) }
+            if !isOwned { action() }
         } label: {
             ZStack(alignment: .topTrailing) {
                 RoundedRectangle(cornerRadius: 10)

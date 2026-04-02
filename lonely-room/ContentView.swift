@@ -60,7 +60,7 @@ struct WardrobeCustomizerView: View {
                 }
                 .pickerStyle(.segmented)
                 .colorScheme(.dark)
-                .onChange(of: vm.characterGender) { _ in
+                .onChange(of: vm.characterGender) {
                     vm.rebuildCharacterAppearance()
                 }
             }
@@ -121,6 +121,7 @@ struct ContentView: View {
     @State private var showCatalog      = false
     @State private var catalogWasOpen   = false
     @State private var showWardrobe     = false
+    @State private var showScanner      = false
 
     @State private var currentTime = Date()
     @State private var lastTODHour = Calendar.current.component(.hour, from: Date())
@@ -185,10 +186,6 @@ struct ContentView: View {
         ZStack {
             // ── Scene ──
             KostSceneView(vm: vm)
-                .ignoresSafeArea()
-
-            // ── Weather Overlays ──
-            RainOverlayView(condition: vm.weather)
                 .ignoresSafeArea()
 
             // ── HUD: Weather (kiri atas) & Jam (kanan atas) ──
@@ -258,6 +255,9 @@ struct ContentView: View {
                             vm.pendingType = nil
                             vm.selectFurniture(nil)
                         }
+                    }, onOpenScanner: {
+                        showCatalog = false
+                        showScanner = true
                     })
                     .padding(.leading, 24)
                     .padding(.trailing, 8)
@@ -591,6 +591,19 @@ struct ContentView: View {
                     withAnimation { showWardrobe = false }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .fullScreenCover(isPresented: $showScanner) {
+            if #available(iOS 17.0, *) {
+                ObjectScannerView {
+                    showScanner = false
+                } onComplete: { outputUSDZPath in
+                    showScanner = false
+                    // Start placing item. Ensure filename is used.
+                    vm.startPlacing(type: .custom3D, path3D: outputUSDZPath.lastPathComponent)
+                }
+            } else {
+                Text("Fitur Scanner 3D Membutuhkan iOS 17 ke atas.")
             }
         }
     }

@@ -84,6 +84,8 @@ class KostViewModel: ObservableObject {
     @Published var selectedFurniture: FurnitureItem?
     @Published var isEditMode: Bool  = false
     @Published var pendingType: FurnitureType? = nil
+    var pendingCustomImagePath: String? = nil
+    var pendingCustom3DPath: String? = nil
     @Published var weather: WeatherCondition?
     @Published var pendingStackSource: FurnitureItem? = nil
     
@@ -101,10 +103,6 @@ class KostViewModel: ObservableObject {
     weak var roomLightNode:    SCNNode?
     weak var switchNode:       SCNNode?
     var switchWorldPos: SIMD3<Float> = .zero
-    
-    var rainDisplayLink: CADisplayLink?
-    var rainTimeOffset: Double = 0
-    var lastRainTimestamp: Double = 0
     
     // leg pivot nodes untuk animasi berjalan
     var legLPivot: SCNNode?
@@ -1055,7 +1053,9 @@ class KostViewModel: ObservableObject {
                 z:             Float(item.node.position.z),
                 yaw:           Float(item.node.eulerAngles.y),
                 stackedOnID:   item.stackedOnID?.uuidString,
-                stackedItemID: item.stackedItemID?.uuidString
+                stackedItemID: item.stackedItemID?.uuidString,
+                customImagePath: item.customImagePath,
+                custom3DPath: item.custom3DPath
             )
         }
         FurniturePersistence.save(data)
@@ -1067,9 +1067,11 @@ class KostViewModel: ObservableObject {
         furnitureItems.contains { $0.type == type }
     }
 
-    func startPlacing(type: FurnitureType) {
+    func startPlacing(type: FurnitureType, imagePath: String? = nil, path3D: String? = nil) {
         guard type.allowsMultiple || !hasItem(ofType: type) else { return }
         selectFurniture(nil)
+        pendingCustomImagePath = imagePath
+        pendingCustom3DPath = path3D
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { pendingType = type }
     }
     
@@ -1104,11 +1106,17 @@ class KostViewModel: ObservableObject {
         }) {
             let base = furnitureItems[baseIdx]
             let node = buildFurnitureNode(type: type)
+            if type == .customImage, let path = pendingCustomImagePath {
+                applyCustomImage(to: node, path: path)
+            }
+            if type == .custom3D, let path = pendingCustom3DPath {
+                applyCustom3D(to: node, path: path)
+            }
             node.position = SCNVector3(Float(base.node.position.x),
                                        Float(base.node.position.y) + Float(base.type.topHeight),
                                        Float(base.node.position.z))
             root.addChildNode(node)
-            var item = FurnitureItem(type: type, position: node.position, node: node)
+            var item = FurnitureItem(type: type, position: node.position, node: node, customImagePath: pendingCustomImagePath, custom3DPath: pendingCustom3DPath)
             item.stackedOnID = base.id
             furnitureItems[baseIdx].stackedItemID = item.id
             furnitureItems.append(item)
@@ -1120,9 +1128,15 @@ class KostViewModel: ObservableObject {
         
         // Normal floor placement
         let node = buildFurnitureNode(type: type)
+        if type == .customImage, let path = pendingCustomImagePath {
+            applyCustomImage(to: node, path: path)
+        }
+        if type == .custom3D, let path = pendingCustom3DPath {
+            applyCustom3D(to: node, path: path)
+        }
         node.position = SCNVector3(max(-2.5, min(2.5, worldPos.x)), 0, max(-1.5, min(1.5, worldPos.z)))
         root.addChildNode(node)
-        let item = FurnitureItem(type: type, position: node.position, node: node)
+        let item = FurnitureItem(type: type, position: node.position, node: node, customImagePath: pendingCustomImagePath, custom3DPath: pendingCustom3DPath)
         furnitureItems.append(item)
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { pendingType = nil }
         saveFurniture()
@@ -1498,24 +1512,25 @@ class KostViewModel: ObservableObject {
     
     func stopRainAnimation() {
         rainParticleNode?.isHidden = true
-        rainDisplayLink?.invalidate(); rainDisplayLink = nil; rainTimeOffset = 0
     }
     
     // MARK: - Rain Particle System
     
     func makeRainParticleSystem(heavy: Bool = true) -> SCNParticleSystem {
         let ps = SCNParticleSystem()
-        ps.particleSize = 0.008; ps.particleSizeVariation = 0.003
-        ps.particleColor = UIColor(red: 0.72, green: 0.88, blue: 1.0, alpha: 0.65)
+        ps.particleSize = 0.015; ps.particleSizeVariation = 0.005
+        ps.particleColor = UIColor(red: 0.72, green: 0.88, blue: 1.0, alpha: 0.85)
         ps.particleColorVariation = SCNVector4(0.02, 0.05, 0.05, 0.10)
-        ps.birthRate = heavy ? 600 : 250; ps.birthRateVariation = 30
+        ps.birthRate = heavy ? 800 : 400; ps.birthRateVariation = 30
         ps.emissionDuration = .greatestFiniteMagnitude; ps.loops = true
-        ps.emitterShape = SCNBox(width: 1.4, height: 0.01, length: 0.01, chamferRadius: 0)
+        ps.emitterShape = SCNBox(width: 1.8, height: 0.01, length: 0.01, chamferRadius: 0)
         ps.birthLocation = .surface
-        ps.particleLifeSpan = 0.55; ps.particleLifeSpanVariation = 0.15
+        ps.particleLifeSpan = 0.85; ps.particleLifeSpanVariation = 0.15
         ps.particleVelocity = 5.0; ps.particleVelocityVariation = 0.6
+        ps.emittingDirection = SCNVector3(0, -1, 0)
+        ps.spreadingAngle = 5
         ps.isAffectedByGravity = true; ps.acceleration = SCNVector3(0.2, -9.8, 0)
-        ps.blendMode = .additive; ps.orientationMode = .free; ps.stretchFactor = 0.10
+        ps.blendMode = .alpha; ps.orientationMode = .free; ps.stretchFactor = 0.25
         return ps
     }
     
@@ -1585,10 +1600,16 @@ class KostViewModel: ObservableObject {
         for data in bases {
             guard let type = FurnitureType(rawValue: data.type) else { continue }
             let node = buildFurnitureNode(type: type)
+            if type == .customImage, let path = data.customImagePath {
+                applyCustomImage(to: node, path: path)
+            }
+            if type == .custom3D, let path = data.custom3DPath {
+                applyCustom3D(to: node, path: path)
+            }
             node.position = SCNVector3(data.x, data.y, data.z)
             node.eulerAngles.y = SCNFloat(data.yaw)
             root.addChildNode(node)
-            let item = FurnitureItem(type: type, position: node.position, node: node, savedID: UUID(uuidString: data.id))
+            let item = FurnitureItem(type: type, position: node.position, node: node, savedID: UUID(uuidString: data.id), customImagePath: data.customImagePath, custom3DPath: data.custom3DPath)
             uuidMap[data.id] = item
             furnitureItems.append(item)
             if type == .wallClock { ClockPlayer.shared.start() }
@@ -1602,10 +1623,16 @@ class KostViewModel: ObservableObject {
             else { continue }
             
             let node = buildFurnitureNode(type: type)
+            if type == .customImage, let path = data.customImagePath {
+                applyCustomImage(to: node, path: path)
+            }
+            if type == .custom3D, let path = data.custom3DPath {
+                applyCustom3D(to: node, path: path)
+            }
             node.position = SCNVector3(data.x, data.y, data.z)
             node.eulerAngles.y = SCNFloat(data.yaw)
             root.addChildNode(node)
-            var item = FurnitureItem(type: type, position: node.position, node: node, savedID: UUID(uuidString: data.id))
+            var item = FurnitureItem(type: type, position: node.position, node: node, savedID: UUID(uuidString: data.id), customImagePath: data.customImagePath, custom3DPath: data.custom3DPath)
             item.stackedOnID = furnitureItems[parentIdx].id
             furnitureItems[parentIdx].stackedItemID = item.id
             furnitureItems.append(item)
@@ -2375,8 +2402,120 @@ class KostViewModel: ObservableObject {
                 SCNAction.moveBy(x: 0.15, y: 0, z: -0.15, duration: 0.8)
             ])
             petContainer.runAction(.repeatForever(jumpWalk))
+            
+        case .customImage:
+            let w = CGFloat(type.footprint.width)
+            let h = CGFloat(type.topHeight)
+            let d = CGFloat(type.footprint.height)
+            
+            // Backing board (standee poster tipis)
+            let board = SCNBox(width: w, height: h, length: d, chamferRadius: 0.02)
+            let mat = SCNMaterial()
+            mat.diffuse.contents = UIColor(white: 0.9, alpha: 1) // default white
+            mat.isDoubleSided = true
+            board.materials = [mat]
+            let boardNode = SCNNode(geometry: board)
+            boardNode.position = SCNVector3(0, h/2, 0)
+            boardNode.name = "customImageFace"
+            root.addChildNode(boardNode)
+            
+        case .custom3D, .aiGenerated:
+            // Placeholder proxy kotak kosong yang aslinya akan digantikan model 3D
+            let proxyGeo = SCNBox(width: 0.1, height: 0.1, length: 0.1, chamferRadius: 0.05)
+            proxyGeo.firstMaterial?.diffuse.contents = UIColor.gray
+            let proxyNode = SCNNode(geometry: proxyGeo)
+            proxyNode.position = SCNVector3(0, 0.05, 0)
+            proxyNode.name = "custom3DProxy"
+            root.addChildNode(proxyNode)
         }
 
         return root
+    }
+    
+    func applyCustom3D(to paramNode: SCNNode, path: String) {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(path)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard let importedNode = SCNReferenceNode(url: url) else { return }
+        
+        importedNode.load()
+        importedNode.name = "custom3DFace"
+        
+        // Remove placeholder and add the 3D model
+        paramNode.childNodes.filter { $0.name == "custom3DProxy" || $0.name == "custom3DFace" }.forEach { $0.removeFromParentNode() }
+        
+        // Deteksi Bounding Box berdasar Geometri Saja (Abaikan elemen tak terlihat/cahaya Tripo yang bikin boundingbox raksasa)
+        var minVec: SCNVector3 = SCNVector3(Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude, Float.greatestFiniteMagnitude)
+        var maxVec: SCNVector3 = SCNVector3(-Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude)
+        
+        importedNode.enumerateChildNodes { child, _ in
+            if child.geometry != nil {
+                let (cMin, cMax) = child.boundingBox
+                let corners = [
+                    SCNVector3(cMin.x, cMin.y, cMin.z),
+                    SCNVector3(cMax.x, cMin.y, cMin.z),
+                    SCNVector3(cMin.x, cMax.y, cMin.z),
+                    SCNVector3(cMax.x, cMax.y, cMin.z),
+                    SCNVector3(cMin.x, cMin.y, cMax.z),
+                    SCNVector3(cMax.x, cMin.y, cMax.z),
+                    SCNVector3(cMin.x, cMax.y, cMax.z),
+                    SCNVector3(cMax.x, cMax.y, cMax.z)
+                ]
+
+                for crn in corners {
+                    let worldP = child.convertPosition(crn, to: importedNode)
+                    minVec.x = min(minVec.x, worldP.x)
+                    minVec.y = min(minVec.y, worldP.y)
+                    minVec.z = min(minVec.z, worldP.z)
+                    maxVec.x = max(maxVec.x, worldP.x)
+                    maxVec.y = max(maxVec.y, worldP.y)
+                    maxVec.z = max(maxVec.z, worldP.z)
+                }
+            }
+        }
+
+        // Fallback jika tidak ada geometri valid
+        if minVec.x == Float.greatestFiniteMagnitude {
+            (minVec, maxVec) = importedNode.boundingBox
+        }
+        
+        // Scale model ke sekitar ~40cm maksimum agar pas di kamar kos
+        let maxDim = max(max(maxVec.x - minVec.x, maxVec.y - minVec.y), maxVec.z - minVec.z)
+        if maxDim > 0.001 {
+            let scaleVal = 0.4 / maxDim
+            importedNode.scale = SCNVector3(scaleVal, scaleVal, scaleVal)
+            // Pusatkan ke tengah origin bawah agar tidak melayang / offset
+            importedNode.position = SCNVector3(
+                -(minVec.x + maxVec.x)/2 * scaleVal,
+                -minVec.y * scaleVal,
+                -(minVec.z + maxVec.z)/2 * scaleVal
+            )
+        }
+        
+        // Mematikan pantulan bercahaya (glowing) tanpa merusak tekstur USDZ
+        importedNode.enumerateChildNodes { child, _ in
+            if let geo = child.geometry {
+                for mat in geo.materials {
+                    mat.emission.contents = UIColor.black
+                    mat.metalness.contents = NSNumber(value: 0.1)
+                    mat.roughness.contents = NSNumber(value: 0.9)
+                    mat.lightingModel = .blinn // Tambahkan lighting model yang didukung agar tidak jadi biji hitam
+                }
+            }
+        }
+
+        paramNode.addChildNode(importedNode)
+    }
+
+    // MARK: - Apply Custom Image
+    func applyCustomImage(to paramNode: SCNNode, path: String) {
+        // Build URL
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(path)
+        guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else { return }
+        
+        paramNode.enumerateChildNodes { n, _ in
+            if n.name == "customImageFace", let mat = n.geometry?.firstMaterial {
+                mat.diffuse.contents = image
+            }
+        }
     }
 }

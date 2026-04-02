@@ -11,6 +11,8 @@ struct FurnitureSaveData: Codable {
     let yaw:          Float
     let stackedOnID:  String?  // UUID item yang di-stack di bawahnya
     let stackedItemID: String? // UUID item yang di atas item ini
+    var customImagePath: String? = nil
+    var custom3DPath: String? = nil
 }
 
 // MARK: - Persistence Manager
