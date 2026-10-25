@@ -3,43 +3,58 @@ import Foundation
 import Combine
 
 // MARK: - Open-Meteo Weather Service
-// WeatherKit backup ada di WeatherService.weatherkit.backup.swift
+/// Cuaca dari Open-Meteo (gratis, tanpa API key). Lokasi hanya dipakai bila user
+/// mengaktifkan "Cuaca sesuai lokasi"; selain itu memakai lokasi default (Tangerang Selatan).
 class WeatherService: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     @Published var condition: WeatherCondition?
     @Published var errorMessage: String?
     @Published var isLoading: Bool = true
+    @Published var placeName: String = WeatherService.fallbackName
 
     private let locationManager = CLLocationManager()
+    private let geocoder = CLGeocoder()
 
     // Tangerang Selatan, Banten
+    private static let fallbackName = "Tangsel"
     private let fallbackLat = -6.3297
     private let fallbackLon = 106.7010
 
     private var refreshTimer: Timer?
-    private let refreshInterval: TimeInterval = 5 * 60  // 5 menit
+    private var lastFetch: Date?
+    private var lastGeocoded: CLLocation?
+    private let refreshInterval: TimeInterval = 10 * 60
 
     override init() {
         super.init()
         locationManager.delegate = self
-        locationManager.desiredAccuracy = kCLLocationAccuracyKilometer
-        locationManager.distanceFilter  = 500
+        locationManager.desiredAccuracy = kCLLocationAccuracyReduced
+        locationManager.distanceFilter  = 1000
     }
 
     // MARK: - Public
 
     func fetch() {
-        let status = locationManager.authorizationStatus
-        print("🌍 fetch() — auth status: \(status.rawValue)")
-        switch status {
-        case .notDetermined:
-            locationManager.requestWhenInUseAuthorization()
-        case .authorizedWhenInUse, .authorizedAlways:
-            locationManager.requestLocation()
-        default:
-            fetchOpenMeteo(lat: fallbackLat, lon: fallbackLon)
+        lastFetch = Date()
+        if AppSettings.shared.useLocationWeather {
+            switch locationManager.authorizationStatus {
+            case .notDetermined:
+                locationManager.requestWhenInUseAuthorization()
+            case .authorizedWhenInUse, .authorizedAlways:
+                locationManager.requestLocation()
+            default:
+                useFallbackLocation()
+            }
+        } else {
+            useFallbackLocation()
         }
         scheduleRefresh()
+    }
+
+    /// Dipanggil saat app kembali aktif — hanya fetch kalau data sudah basi.
+    func refreshIfStale() {
+        guard let last = lastFetch else { fetch(); return }
+        if Date().timeIntervalSince(last) > refreshInterval { fetch() }
     }
 
     func stopRefresh() {
@@ -47,14 +62,30 @@ class WeatherService: NSObject, ObservableObject, CLLocationManagerDelegate {
         refreshTimer = nil
     }
 
-    // MARK: - Auto Refresh
+    // MARK: - Private
+
+    private func useFallbackLocation() {
+        placeName = Self.fallbackName
+        fetchOpenMeteo(lat: fallbackLat, lon: fallbackLon)
+    }
 
     private func scheduleRefresh() {
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval,
-                                            repeats: true) { [weak self] _ in
-            print("🔄 Auto-refresh cuaca (5 menit)...")
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             self?.fetch()
+        }
+        refreshTimer?.tolerance = 30
+    }
+
+    private func reverseGeocode(_ loc: CLLocation) {
+        if let last = lastGeocoded, last.distance(from: loc) < 2000 { return }
+        lastGeocoded = loc
+        geocoder.reverseGeocodeLocation(loc) { [weak self] placemarks, _ in
+            let p = placemarks?.first
+            let name = p?.locality ?? p?.subAdministrativeArea ?? p?.administrativeArea
+            DispatchQueue.main.async {
+                if let name, !name.isEmpty { self?.placeName = name }
+            }
         }
     }
 
@@ -63,71 +94,71 @@ class WeatherService: NSObject, ObservableObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager,
                                      didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
-        print("📍 Location: \(loc.coordinate.latitude), \(loc.coordinate.longitude)")
         DispatchQueue.main.async {
-            self.fetchOpenMeteo(lat: loc.coordinate.latitude,
-                                lon: loc.coordinate.longitude)
+            self.reverseGeocode(loc)
+            self.fetchOpenMeteo(lat: loc.coordinate.latitude, lon: loc.coordinate.longitude)
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager,
                                      didFailWithError error: Error) {
-        print("📍 Location error — fallback ke Tangerang Selatan: \(error.localizedDescription)")
-        DispatchQueue.main.async {
-            self.fetchOpenMeteo(lat: self.fallbackLat, lon: self.fallbackLon)
-        }
+        DispatchQueue.main.async { self.useFallbackLocation() }
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
-        print("🌍 Auth changed → \(status.rawValue)")
-        switch status {
-        case .authorizedWhenInUse, .authorizedAlways:
-            DispatchQueue.main.async { manager.requestLocation() }
-        case .denied, .restricted:
-            DispatchQueue.main.async {
-                self.fetchOpenMeteo(lat: self.fallbackLat, lon: self.fallbackLon)
+        DispatchQueue.main.async {
+            guard AppSettings.shared.useLocationWeather else { return }
+            switch status {
+            case .authorizedWhenInUse, .authorizedAlways:
+                manager.requestLocation()
+            case .denied, .restricted:
+                self.useFallbackLocation()
+            default:
+                break
             }
-        default:
-            break
         }
     }
 
     // MARK: - Open-Meteo API
 
-    private func fetchOpenMeteo(lat: Double, lon: Double) {
-        let urlStr = "https://api.open-meteo.com/v1/forecast"
-            + "?latitude=\(lat)&longitude=\(lon)"
-            + "&current=temperature_2m,weather_code,is_day"
-            + "&timezone=auto"
-        guard let url = URL(string: urlStr) else { return }
+    nonisolated private struct Response: Decodable {
+        nonisolated struct Current: Decodable {
+            let temperature_2m: Double
+            let weather_code: Int
+            let is_day: Int
+        }
+        let current: Current
+    }
 
-        print("🌤 Open-Meteo fetching: \(lat), \(lon)")
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
+    private func fetchOpenMeteo(lat: Double, lon: Double) {
+        var comps = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
+        comps.queryItems = [
+            URLQueryItem(name: "latitude",  value: String(format: "%.3f", lat)),
+            URLQueryItem(name: "longitude", value: String(format: "%.3f", lon)),
+            URLQueryItem(name: "current",   value: "temperature_2m,weather_code,is_day"),
+            URLQueryItem(name: "timezone",  value: "auto"),
+        ]
+        guard let url = comps.url else { return }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            let decoded = data.flatMap { try? JSONDecoder().decode(Response.self, from: $0) }
             DispatchQueue.main.async {
                 guard let self else { return }
-                if let error = error {
-                    print("❌ Open-Meteo error: \(error.localizedDescription)")
-                    self.errorMessage = error.localizedDescription
-                    self.isLoading = false
+                defer { self.isLoading = false }
+                guard error == nil, let c = decoded?.current else {
+                    self.errorMessage = error?.localizedDescription ?? "Gagal memuat cuaca"
                     return
                 }
-                guard let data,
-                      let json    = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let current = json["current"] as? [String: Any],
-                      let code    = current["weather_code"] as? Int,
-                      let isDay   = current["is_day"] as? Int,
-                      let temp    = current["temperature_2m"] as? Double
-                else {
-                    print("❌ Open-Meteo parse error")
-                    self.errorMessage = "Parse gagal"
-                    self.isLoading = false
-                    return
+                let new = WeatherCondition(code: c.weather_code, isDay: c.is_day == 1, tempC: c.temperature_2m)
+                // Hindari re-render & re-draw tekstur bila cuaca tidak berubah.
+                if self.condition?.code != new.code || self.condition?.isDay != new.isDay
+                    || Int(self.condition?.tempC ?? -999) != Int(new.tempC) {
+                    self.condition = new
                 }
-                print("✅ Open-Meteo: code=\(code), isDay=\(isDay), temp=\(temp)°C")
-                self.condition    = WeatherCondition(code: code, isDay: isDay == 1, tempC: temp)
                 self.errorMessage = nil
-                self.isLoading    = false
             }
         }.resume()
     }

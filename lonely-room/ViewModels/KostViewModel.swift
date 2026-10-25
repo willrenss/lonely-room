@@ -100,12 +100,31 @@ class KostViewModel: ObservableObject {
     weak var rainParticleNode: SCNNode?
     weak var roomLightNode:    SCNNode?
     weak var switchNode:       SCNNode?
+    weak var corridorLightsNode: SCNNode?
+
+    /// categoryBitMask untuk node dinding (dipakai raycast kamera).
+    static let wallCategory = 1 << 1
     var switchWorldPos: SIMD3<Float> = .zero
     
-    var rainDisplayLink: CADisplayLink?
-    var rainTimeOffset: Double = 0
-    var lastRainTimestamp: Double = 0
-    
+    /// Status hujan terakhir, dipakai saat kualitas grafis berubah.
+    private var rainIsHeavy = false
+
+    // ── Fitur: kebutuhan karakter & Pomodoro ──
+    let needs = NeedsStore()
+    let focus = FocusTimer()
+
+    // ── Input loop (joystick) ──
+    private var joystick = SIMD2<Float>.zero
+    private var displayLink: CADisplayLink?
+    private var lastFrameTime: CFTimeInterval = 0
+    private var proximityElapsed: CFTimeInterval = 0
+
+    // ── Ticker ringan untuk jam/kebutuhan (5 detik, bukan per frame) ──
+    private var ambientTimer: Timer?
+    private var lastTODHour = Calendar.current.component(.hour, from: Date())
+    private var lastPlantLevel: Double = -1
+    private var cancellables = Set<AnyCancellable>()
+
     // leg pivot nodes untuk animasi berjalan
     var legLPivot: SCNNode?
     var legRPivot: SCNNode?
@@ -130,8 +149,175 @@ class KostViewModel: ObservableObject {
         yaw = 0
         cameraPivot.position      = SCNVector3(0, 0, 0)
         cameraPivot.eulerAngles.y = 0
+
+        focus.onFocusCompleted = { [weak self] minutes in
+            self?.needs.focusCompleted(minutes: minutes)
+        }
+        // ContentView hanya perlu tahu saat fase berubah (bukan tiap detik hitung mundur).
+        focus.$phase
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
-    
+
+    deinit {
+        displayLink?.invalidate()
+        ambientTimer?.invalidate()
+    }
+
+    /// @Published selalu mengirim objectWillChange walau nilainya sama.
+    /// Proximity dicek berkali-kali per detik, jadi hanya set kalau benar-benar berubah
+    /// supaya SwiftUI tidak re-render seluruh HUD tanpa alasan.
+    private func setIfChanged<T: Equatable>(_ kp: ReferenceWritableKeyPath<KostViewModel, T>, _ value: T) {
+        if self[keyPath: kp] != value { self[keyPath: kp] = value }
+    }
+
+    func refreshProximity() {
+        checkNearBed()
+        checkNearSwitch()
+        checkNearMusicPlayer()
+        checkNearChair()
+        checkNearWindow()
+        checkNearDoor()
+        checkNearLamp()
+        checkNearPlant()
+        checkNearWardrobe()
+    }
+
+    // MARK: - Joystick Input Loop
+
+    /// Joystick hanya menyimpan nilai; gerakan dijalankan oleh CADisplayLink yang
+    /// aktif hanya selama joystick ditekan (dulu: Timer 60Hz di ContentView yang
+    /// jalan terus dan memicu re-render SwiftUI tiap drag).
+    func setJoystick(dx: Float, dy: Float) {
+        joystick = SIMD2(dx, dy)
+        guard displayLink == nil else { return }
+        lastFrameTime = 0
+        let link = CADisplayLink(target: DisplayLinkProxy { [weak self] link in self?.stepFrame(link) },
+                                 selector: #selector(DisplayLinkProxy.tick(_:)))
+        let maxFPS = Float(AppSettings.shared.graphicsQuality.framesPerSecond)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: min(30, maxFPS), maximum: maxFPS, preferred: maxFPS)
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    func releaseJoystick() {
+        joystick = .zero
+        displayLink?.invalidate()
+        displayLink = nil
+        stopWalking()
+    }
+
+    private func stepFrame(_ link: CADisplayLink) {
+        let dt = lastFrameTime == 0 ? 1.0 / 60 : min(link.timestamp - lastFrameTime, 1.0 / 20)
+        lastFrameTime = link.timestamp
+        guard abs(joystick.x) > 0.02 || abs(joystick.y) > 0.02 else { return }
+        move(dx: joystick.x, dy: joystick.y, dt: dt)
+    }
+
+    // MARK: - Ambient Ticker
+
+    func startAmbientTicker() {
+        ambientTimer?.invalidate()
+        let interval: TimeInterval = 5
+        ambientTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            self?.ambientTick(seconds: interval)
+        }
+        ambientTimer?.tolerance = 1
+    }
+
+    func stopAmbientTicker() {
+        ambientTimer?.invalidate()
+        ambientTimer = nil
+    }
+
+    private func ambientTick(seconds: TimeInterval) {
+        let hour = Calendar.current.component(.hour, from: Date())
+        if hour != lastTODHour {
+            lastTODHour = hour
+            applyTimeOfDay()
+        }
+
+        let w = weather
+        let rainy = w.map { [51,53,55,61,63,65,80,81,82,95,96,99].contains($0.code) } ?? false
+        var ctx = NeedsContext()
+        ctx.isLyingDown  = isLyingDown
+        ctx.isWalking    = isWalking
+        ctx.isFocusing   = focus.phase == .focus && !focus.isPaused
+        ctx.musicPlaying = MusicPlayer.shared.isPlaying
+        ctx.windowOpen   = isWindowOpen
+        ctx.niceWeather  = (w?.isDay ?? false) && !rainy
+        ctx.roomIsDim    = !isLightOn || roomBrightness < 0.35
+        needs.tick(seconds: seconds, context: ctx)
+
+        if abs(needs.plant - lastPlantLevel) >= 5 { applyPlantHealth() }
+    }
+
+    // MARK: - Plant Health Visual
+
+    /// Daun berubah kecoklatan & mengecil saat level tanaman < 50.
+    func applyPlantHealth() {
+        let level = needs.plant
+        lastPlantLevel = level
+        let t = CGFloat(max(0, min(1, (50 - level) / 50)))
+        let color = UIColor(red: 0.15 + 0.40 * t, green: 0.60 - 0.18 * t, blue: 0.15, alpha: 0.95)
+        let s = Float(1 - 0.25 * t)
+        for item in furnitureItems where item.type == .plant {
+            item.node.enumerateChildNodes { node, _ in
+                guard node.name == "leaf" else { return }
+                node.geometry?.firstMaterial?.diffuse.contents = color
+                node.scale = SCNVector3(s, s, s)
+            }
+        }
+    }
+
+    // MARK: - Graphics Quality
+
+    func applyGraphics(_ q: GraphicsQuality) {
+        scnView?.antialiasingMode = q.antialiasing
+        scnView?.preferredFramesPerSecond = q.framesPerSecond
+        if let ps = rainParticleNode?.particleSystems?.first {
+            ps.birthRate = (rainIsHeavy ? 600 : 250) * q.particleScale
+        }
+    }
+
+    // MARK: - Photo
+
+    /// Render 3D kamar saja (tanpa HUD SwiftUI).
+    func captureRoomSnapshot() -> UIImage? {
+        scnView?.snapshot()
+    }
+
+    // MARK: - Reset Layout
+
+    func resetLayout() {
+        guard let root = sceneRoot else { return }
+        if isLyingDown { standUp() }
+        if isSitting { standUpChair() }
+        selectFurniture(nil)
+        pendingType = nil
+        pendingStackSource = nil
+        furnitureItems.forEach { $0.node.removeFromParentNode() }
+        furnitureItems.removeAll()
+        ClockPlayer.shared.stop()
+        FurniturePersistence.clear()
+        spawnHardcodedLayout(into: root)
+        saveFurniture()
+        restoreLampLights()
+        applyPlantHealth()
+        refreshProximity()
+    }
+
+    private func restoreLampLights() {
+        for item in furnitureItems where item.type == .lamp {
+            item.node.enumerateChildNodes { node, _ in
+                guard let light = node.light, light.type == .omni else { return }
+                light.intensity = self.isLampOn ? 600 : 0
+            }
+        }
+    }
+
     // MARK: - TPP Camera
     func updateCameraForTPP() {
         if isLyingDown { return } // Do not update TPP when in FPP (lying down)
@@ -178,8 +364,11 @@ class KostViewModel: ObservableObject {
         guard dist > 0.001 else { return }
         
         // Ray-cast — hanya peduli node bernama "wall"
+        // Dulu: searchMode .all ke SELURUH scene (furnitur, karakter, partikel) tiap frame.
+        // Sekarang: hanya node dinding, dan cukup hit terdekat.
         let options: [String: Any] = [
-            SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.all.rawValue,
+            SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.closest.rawValue,
+            SCNHitTestOption.categoryBitMask.rawValue: KostViewModel.wallCategory,
             SCNHitTestOption.ignoreHiddenNodes.rawValue: true,
             SCNHitTestOption.backFaceCulling.rawValue: false
         ]
@@ -257,17 +446,20 @@ class KostViewModel: ObservableObject {
     
     // MARK: - Movement
     
-    func move(dx: Float, dy: Float) {
+    func move(dx: Float, dy: Float, dt: CFTimeInterval = 1.0 / 60) {
         guard !isLyingDown, !isSitting else { return }
+        // Kecepatan independen frame rate (speed dikalibrasi untuk 60 FPS).
+        let frameScale = Float(dt * 60)
         // Kamera ada di posisi (sin(yaw)*Z, 1.1, cos(yaw)*Z) relatif pivot.
         // "Maju" (dy+) = bergerak menjauh dari kamera = arah berlawanan dari kamera
         // forward = (-sin(yaw), 0, -cos(yaw))
         // strafe kanan (dx+) = (cos(yaw), 0, -sin(yaw))
         let camYaw = yaw
-        let fwdX = -sin(camYaw) * dy * speed
-        let fwdZ = -cos(camYaw) * dy * speed
-        let strX =  cos(camYaw) * dx * speed
-        let strZ = -sin(camYaw) * dx * speed
+        let step = speed * frameScale
+        let fwdX = -sin(camYaw) * dy * step
+        let fwdZ = -cos(camYaw) * dy * step
+        let strX =  cos(camYaw) * dx * step
+        let strZ = -sin(camYaw) * dx * step
         
         let newX = Float(characterNode.position.x) + fwdX + strX
         let newZ = Float(characterNode.position.z) + fwdZ + strZ
@@ -339,17 +531,12 @@ class KostViewModel: ObservableObject {
         characterNode.position.z = clampedZ
         characterNode.position.y = 0
         
-        // Cek apakah dekat kasur / saklar
-        checkNearBed()
-        checkNearSwitch()
-        checkNearMusicPlayer()
-        checkNearChair()
-        checkNearWindow()
-        checkNearDoor()
-        checkNearLamp()
-        checkNearPlant()
-        checkNearWardrobe()
-        checkNearWardrobe()
+        // Cek proximity ±10x/detik saja — cukup responsif dan jauh lebih hemat.
+        proximityElapsed += dt
+        if proximityElapsed >= 0.1 {
+            proximityElapsed = 0
+            refreshProximity()
+        }
         
         // Karakter smooth rotate ke arah gerak
         if abs(fwdX + strX) > 0.001 || abs(fwdZ + strZ) > 0.001 {
@@ -357,7 +544,7 @@ class KostViewModel: ObservableObject {
             var diff = targetFacing - charFacing
             while diff >  Float.pi { diff -= 2 * Float.pi }
             while diff < -Float.pi { diff += 2 * Float.pi }
-            charFacing += diff * 0.25
+            charFacing += diff * (1 - pow(0.75, frameScale))
             characterNode.eulerAngles.y = SCNFloat(charFacing)
         }
         
@@ -370,16 +557,7 @@ class KostViewModel: ObservableObject {
         isWalking = false
         FootstepPlayer.shared.stop()
         stopWalkAnimation()
-        
-        checkNearDoor()
-        checkNearWindow()
-        checkNearLamp()
-        checkNearPlant()
-        checkNearBed()
-        checkNearSwitch()
-        checkNearMusicPlayer()
-        checkNearChair()
-        checkNearWardrobe()
+        refreshProximity()
     }
     
     // MARK: - Bed Proximity & Lie Down
@@ -387,13 +565,13 @@ class KostViewModel: ObservableObject {
     func checkNearBed() {
         guard !isLyingDown else { return }
         let bedItem = furnitureItems.first(where: { $0.type == .bed })
-        guard let bed = bedItem else { isNearBed = false; return }
+        guard let bed = bedItem else { setIfChanged(\.isNearBed, false); return }
         let cx = Float(characterNode.position.x)
         let cz = Float(characterNode.position.z)
         let bx = Float(bed.node.position.x)
         let bz = Float(bed.node.position.z)
         let dist = sqrt((cx - bx) * (cx - bx) + (cz - bz) * (cz - bz))
-        isNearBed = dist < 1.2
+        setIfChanged(\.isNearBed, dist < 1.2)
     }
     
     func layDown() {
@@ -483,11 +661,8 @@ class KostViewModel: ObservableObject {
         
         updateCameraForTPP()
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            self.checkNearBed()
-            self.checkNearSwitch()
-            self.checkNearMusicPlayer()
-            self.checkNearWardrobe()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.refreshProximity()
         }
     }
     
@@ -522,12 +697,13 @@ class KostViewModel: ObservableObject {
         let cz = Float(characterNode.position.z)
         let dx = cx - doorWorldPos.x
         let dz = cz - doorWorldPos.z
-        isNearDoor = sqrt(dx*dx + dz*dz) < 1.4
+        setIfChanged(\.isNearDoor, sqrt(dx*dx + dz*dz) < 1.4)
     }
     
     func toggleDoor() {
         isDoorOpen.toggle()
         guard let door = doorNode else { return }
+        corridorLightsNode?.isHidden = !isDoorOpen
         
         SCNTransaction.begin()
         SCNTransaction.animationDuration = 0.5
@@ -545,10 +721,10 @@ class KostViewModel: ObservableObject {
         let cx = Float(characterNode.position.x)
         let cz = Float(characterNode.position.z)
         let item = furnitureItems.first(where: { $0.type == .musicPlayer })
-        guard let mp = item else { isNearMusicPlayer = false; return }
+        guard let mp = item else { setIfChanged(\.isNearMusicPlayer, false); return }
         let dx = cx - Float(mp.node.position.x)
         let dz = cz - Float(mp.node.position.z)
-        isNearMusicPlayer = sqrt(dx*dx + dz*dz) < 1.2
+        setIfChanged(\.isNearMusicPlayer, sqrt(dx*dx + dz*dz) < 1.2)
     }
 
     // MARK: - Chair Proximity & Sit
@@ -558,10 +734,10 @@ class KostViewModel: ObservableObject {
         let cx = Float(characterNode.position.x)
         let cz = Float(characterNode.position.z)
         let chair = furnitureItems.first(where: { $0.type == .chair })
-        guard let ch = chair else { isNearChair = false; return }
+        guard let ch = chair else { setIfChanged(\.isNearChair, false); return }
         let dx = cx - Float(ch.node.position.x)
         let dz = cz - Float(ch.node.position.z)
-        isNearChair = sqrt(dx*dx + dz*dz) < 1.0
+        setIfChanged(\.isNearChair, sqrt(dx*dx + dz*dz) < 1.0)
     }
 
     func sitDown() {
@@ -669,13 +845,7 @@ class KostViewModel: ObservableObject {
             self.kneeRPivot?.eulerAngles = SCNVector3(0, 0, 0)
             self.armLPivot?.eulerAngles  = SCNVector3(0, 0, 0)
             self.armRPivot?.eulerAngles  = SCNVector3(0, 0, 0)
-            self.checkNearChair()
-            self.checkNearBed()
-            self.checkNearSwitch()
-            self.checkNearMusicPlayer()
-            self.checkNearWindow()
-            self.checkNearDoor()
-            self.checkNearWardrobe()
+            self.refreshProximity()
         }
     }
 
@@ -686,7 +856,7 @@ class KostViewModel: ObservableObject {
         let cz = Float(characterNode.position.z)
         let dx = cx - windowWorldPos.x
         let dz = cz - windowWorldPos.z
-        isNearWindow = sqrt(dx*dx + dz*dz) < 1.4
+        setIfChanged(\.isNearWindow, sqrt(dx*dx + dz*dz) < 1.4)
     }
 
     // MARK: - Floor Lamp
@@ -700,7 +870,7 @@ class KostViewModel: ObservableObject {
             let dz = cz - Float(item.node.position.z)
             return sqrt(dx*dx + dz*dz) < 1.0
         }
-        isNearLamp = near
+        setIfChanged(\.isNearLamp, near)
     }
 
     func toggleLamp() {
@@ -825,10 +995,10 @@ class KostViewModel: ObservableObject {
         let cx = Float(characterNode.position.x)
         let cz = Float(characterNode.position.z)
         let hit = furnitureItems.first(where: { $0.type == .wardrobe })
-        guard let p = hit else { isNearWardrobe = false; return }
+        guard let p = hit else { setIfChanged(\.isNearWardrobe, false); return }
         let dx = cx - Float(p.node.position.x)
         let dz = cz - Float(p.node.position.z)
-        isNearWardrobe = sqrt(dx*dx + dz*dz) < 1.4
+        setIfChanged(\.isNearWardrobe, sqrt(dx*dx + dz*dz) < 1.4)
     }
 
     func checkNearPlant() {
@@ -840,13 +1010,16 @@ class KostViewModel: ObservableObject {
             let dz = cz - Float(item.node.position.z)
             return sqrt(dx*dx + dz*dz) < 1.0
         }
-        isNearPlant = near
+        setIfChanged(\.isNearPlant, near)
     }
 
     func waterPlant() {
         guard !isWatering else { return }
         isWatering  = true
         isNearPlant = false
+        needs.wateredPlant()
+        applyPlantHealth()
+        Haptics.tap()
 
         // Pasang kaleng penyiram di tangan kanan
         if let armR = armRPivot {
@@ -951,7 +1124,7 @@ class KostViewModel: ObservableObject {
         let cz = Float(characterNode.position.z)
         let dx = cx - switchWorldPos.x
         let dz = cz - switchWorldPos.z
-        isNearSwitch = sqrt(dx*dx + dz*dz) < 1.2
+        setIfChanged(\.isNearSwitch, sqrt(dx*dx + dz*dz) < 1.2)
     }
     
     func toggleLight() {
@@ -1124,6 +1297,9 @@ class KostViewModel: ObservableObject {
         root.addChildNode(node)
         let item = FurnitureItem(type: type, position: node.position, node: node)
         furnitureItems.append(item)
+        if type == .plant { applyPlantHealth() }
+        if type == .lamp { restoreLampLights() }
+        Haptics.tap()
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { pendingType = nil }
         saveFurniture()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.selectFurniture(item) }
@@ -1153,6 +1329,8 @@ class KostViewModel: ObservableObject {
     
     func interactWithPet(_ item: FurnitureItem) {
         guard let petBody = item.node.childNode(withName: "petBody", recursively: false) else { return }
+        needs.petInteraction()
+        Haptics.tap()
         
         if item.type == .cat {
             petBody.removeAllActions()
@@ -1475,8 +1653,10 @@ class KostViewModel: ObservableObject {
         stopRainAnimation()
         
         // Unhide 3D rain particles out the window to replace the slow CPU texture
+        rainIsHeavy = heavy
         rainParticleNode?.isHidden = false
-        rainParticleNode?.particleSystems?.first?.birthRate = heavy ? 600 : 250
+        rainParticleNode?.particleSystems?.first?.birthRate =
+            (heavy ? 600 : 250) * AppSettings.shared.graphicsQuality.particleScale
         
         // We only need to apply the static rainy weather texture once.
         // Rendering rain on the CPU every frame was causing severe lag.
@@ -1498,7 +1678,6 @@ class KostViewModel: ObservableObject {
     
     func stopRainAnimation() {
         rainParticleNode?.isHidden = true
-        rainDisplayLink?.invalidate(); rainDisplayLink = nil; rainTimeOffset = 0
     }
     
     // MARK: - Rain Particle System
@@ -1546,13 +1725,8 @@ class KostViewModel: ObservableObject {
         characterNode.addChildNode(charNode)
         root.addChildNode(characterNode)
         
-        // Restore lamp state
-        for item in furnitureItems where item.type == .lamp {
-            item.node.enumerateChildNodes { node, _ in
-                guard let light = node.light, light.type == .omni else { return }
-                light.intensity = self.isLampOn ? 600 : 0
-            }
-        }
+        restoreLampLights()
+        applyPlantHealth()
         
         // Set switch visual state
         if let sw = switchNode, let mat = sw.geometry?.firstMaterial {
@@ -1569,7 +1743,8 @@ class KostViewModel: ObservableObject {
         cameraNode.eulerAngles = SCNVector3(-0.15, 0, 0)
         root.addChildNode(cameraPivot)
         updateCameraForTPP()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.checkNearBed(); self.checkNearSwitch(); self.checkNearMusicPlayer() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.refreshProximity() }
+        startAmbientTicker()
     }
     
     // MARK: - Load Saved Layout
@@ -1650,6 +1825,8 @@ class KostViewModel: ObservableObject {
         spawnFloor(type: .bed,      x: -1.55, z: -0.6,  yaw: .pi / 2)
         spawnFloor(type: .wardrobe, x:  2.1,  z: -1.1,  yaw: .pi / 2)
         spawnFloor(type: .desk,     x: -1.8,  z:  0.9,  yaw: .pi)
+        // Kursi menghadap meja — tempat memulai sesi fokus.
+        spawnFloor(type: .chair,    x: -1.8,  z:  0.5)
         spawnFloor(type: .lamp,     x:  2.1,  z:  1.2)
         if let deskIdx = furnitureItems.firstIndex(where: { $0.type == .desk }) {
             spawnStacked(type: .bag, on: deskIdx)
@@ -1679,7 +1856,7 @@ class KostViewModel: ObservableObject {
         // Define color styles based on gender & styles
         var shirtColor = UIColor(red: 0.25, green: 0.45, blue: 0.80, alpha: 1)
         var pantsColor = UIColor(red: 0.20, green: 0.22, blue: 0.35, alpha: 1)
-        var shoesColor = UIColor(red: 0.15, green: 0.10, blue: 0.08, alpha: 1)
+        let shoesColor = UIColor(red: 0.15, green: 0.10, blue: 0.08, alpha: 1)
         var hairColor  = UIColor(red: 0.18, green: 0.12, blue: 0.08, alpha: 1)
         
         if characterGender == "Perempuan" {
@@ -1968,6 +2145,7 @@ class KostViewModel: ObservableObject {
                 let leaf = SCNSphere(radius: 0.15)
                 leaf.firstMaterial?.diffuse.contents = UIColor(red:0.15,green:0.60,blue:0.15,alpha:0.95)
                 let ln = SCNNode(geometry: leaf)
+                ln.name = "leaf"
                 ln.position = SCNVector3(sin(angle)*0.10, h, cos(angle)*0.10)
                 root.addChildNode(ln)
             }
@@ -2379,4 +2557,12 @@ class KostViewModel: ObservableObject {
 
         return root
     }
+}
+
+// MARK: - Display Link Proxy
+/// CADisplayLink me-retain target-nya; proxy ini mencegah retain cycle dengan view model.
+final class DisplayLinkProxy: NSObject {
+    private let handler: (CADisplayLink) -> Void
+    init(_ handler: @escaping (CADisplayLink) -> Void) { self.handler = handler }
+    @objc func tick(_ link: CADisplayLink) { handler(link) }
 }

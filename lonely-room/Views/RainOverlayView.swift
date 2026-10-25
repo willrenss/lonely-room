@@ -1,93 +1,101 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Animated Rain Overlay
+/// Hujan di layar memakai CAEmitterLayer: partikel dianimasikan Core Animation di GPU.
+/// Versi lama memakai TimelineView + Canvas yang menggambar ulang 70–200 garis di
+/// main thread setiap frame, bersaing dengan SceneKit dan bikin lag.
 struct RainOverlayView: View {
     let condition: WeatherCondition?
 
-    private var isRain: Bool {
-        guard let c = condition else { return false }
-        return [51,53,55,61,63,65,80,81,82,95,96,99].contains(c.code)
-    }
-
-    private var isHeavy: Bool {
-        guard let c = condition else { return false }
-        return [65,80,81,82,95,96,99].contains(c.code)
-    }
-
-    private var isStorm: Bool {
-        guard let c = condition else { return false }
-        return [95,96,99].contains(c.code)
+    private var intensity: RainEmitterView.Intensity? {
+        guard let c = condition else { return nil }
+        if [95, 96, 99].contains(c.code) { return .storm }
+        if [65, 80, 81, 82].contains(c.code) { return .heavy }
+        if [51, 53, 55, 61, 63].contains(c.code) { return .light }
+        return nil
     }
 
     var body: some View {
-        if isRain {
-            TimelineView(.animation) { tl in
-                let t = tl.date.timeIntervalSinceReferenceDate
-                Canvas { ctx, size in
-                    drawRain(ctx: ctx, size: size, time: t,
-                             heavy: isHeavy, storm: isStorm)
-                }
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
+        if let intensity {
+            RainEmitterView(intensity: intensity)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
         }
     }
+}
 
-    // MARK: - Draw
-    private func drawRain(ctx: GraphicsContext, size: CGSize,
-                          time: Double, heavy: Bool, storm: Bool) {
-        let dropCount  = storm ? 200 : heavy ? 140 : 70
-        let speed      = storm ? 1.8  : heavy ? 1.4  : 0.9   // full-screen per second
-        let lenBase    = storm ? 28.0 : heavy ? 20.0 : 12.0
-        let slant      = storm ? -14.0 : heavy ? -9.0 : -5.0
-        let alpha      = storm ? 0.55  : heavy ? 0.45 : 0.32
-        let lineW      = storm ? 1.6   : heavy ? 1.2  : 0.85
+// MARK: - Emitter
+private struct RainEmitterView: UIViewRepresentable {
+    enum Intensity { case light, heavy, storm }
+    let intensity: Intensity
 
-        // seeded positions so drops stay consistent per-frame
-        var rng: UInt64 = 0xDEADBEEF
+    func makeUIView(context: Context) -> EmitterHostView {
+        let v = EmitterHostView()
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = .clear
+        v.configure(intensity)
+        return v
+    }
 
-        func next() -> Double {
-            rng = rng &* 6364136223846793005 &+ 1442695040888963407
-            return Double(rng >> 11) / Double(1 << 53)
+    func updateUIView(_ uiView: EmitterHostView, context: Context) {
+        uiView.configure(intensity)
+    }
+
+    final class EmitterHostView: UIView {
+        private let emitter = CAEmitterLayer()
+        private var current: Intensity?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            emitter.emitterShape = .line
+            emitter.renderMode = .additive
+            layer.addSublayer(emitter)
         }
 
-        let w = size.width
-        let h = size.height
-        
-        // Use single path to batch drawing instead of doing 200 separate ctx.stroke calls
-        var path = Path()
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-        for _ in 0..<dropCount {
-            let xFrac   = next()           // 0..1 horizontal position
-            let yOffset = next()           // stagger start position
-            let speedVar = next() * 0.4 + 0.8   // ±20% speed variation
-            let lenVar   = next() * 0.5 + 0.75  // length variation
-
-            // y position scrolls with time, wraps around
-            let rawY = (yOffset + time * speed * speedVar).truncatingRemainder(dividingBy: 1.0)
-            let y    = rawY * (h + lenBase) - lenBase
-
-            let x    = xFrac * (w - 20) + 10
-
-            let len  = lenBase * lenVar
-            let from = CGPoint(x: x,            y: y)
-            let to   = CGPoint(x: x + slant,    y: y + len)
-
-            path.move(to: from)
-            path.addLine(to: to)
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            // Garis emitter sedikit di atas layar dan lebih lebar dari layar (untuk kemiringan).
+            emitter.frame = bounds
+            emitter.emitterPosition = CGPoint(x: bounds.midX + 40, y: -20)
+            emitter.emitterSize = CGSize(width: bounds.width * 1.3, height: 1)
         }
-        
-        ctx.stroke(path,
-                   with: .color(.init(red: 0.72, green: 0.86, blue: 0.98,
-                                      opacity: alpha)),
-                   style: StrokeStyle(lineWidth: lineW,
-                                      lineCap: .round))
 
-        // Drizzle mist layer (light rain only)
-        if !heavy {
-            let mistAlpha = 0.06 + 0.04 * sin(time * 0.8)
-            ctx.fill(Path(CGRect(origin: .zero, size: size)),
-                     with: .color(.init(white: 0.85, opacity: mistAlpha)))
+        func configure(_ intensity: Intensity) {
+            guard intensity != current else { return }
+            current = intensity
+
+            let (birth, speed, length, alpha): (Float, CGFloat, CGFloat, CGFloat) = {
+                switch intensity {
+                case .light: return (90,  700, 14, 0.30)
+                case .heavy: return (180, 950, 22, 0.42)
+                case .storm: return (260, 1150, 28, 0.52)
+                }
+            }()
+
+            let cell = CAEmitterCell()
+            cell.contents = Self.dropImage(length: length).cgImage
+            cell.birthRate = birth
+            cell.lifetime = 1.6
+            cell.velocity = speed
+            cell.velocityRange = speed * 0.2
+            // Sedikit miring ke kiri seperti versi lama.
+            cell.emissionLongitude = .pi / 2 + 0.12
+            cell.scale = 1
+            cell.scaleRange = 0.3
+            cell.alphaSpeed = 0
+            cell.color = UIColor(red: 0.72, green: 0.86, blue: 0.98, alpha: alpha).cgColor
+            emitter.emitterCells = [cell]
+        }
+
+        private static func dropImage(length: CGFloat) -> UIImage {
+            let size = CGSize(width: 2, height: length)
+            return UIGraphicsImageRenderer(size: size).image { _ in
+                UIColor.white.setFill()
+                UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 1).fill()
+            }
         }
     }
 }

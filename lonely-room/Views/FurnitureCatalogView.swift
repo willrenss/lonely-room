@@ -33,7 +33,7 @@ struct FurnitureCatalogView: View {
             }
             .buttonStyle(.plain)
         }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22))
+        .background(Color.hudFill, in: RoundedRectangle(cornerRadius: 22))
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(Color.white.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 12, x: 0, y: 4)
     }
@@ -113,7 +113,7 @@ struct FurnitureActionBubbles: View {
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(.ultraThinMaterial, in: Capsule())
+            .background(Color.hudFill, in: Capsule())
             .shadow(color: .black.opacity(0.25), radius: 6, x: 0, y: 3)
             .opacity(appeared ? 1 : 0)
             .scaleEffect(appeared ? 1 : 0.8, anchor: .trailing)
@@ -184,7 +184,7 @@ struct StackModeBanner: View {
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 8)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.hudFill, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16)
             .stroke(Color.yellow.opacity(0.4), lineWidth: 1))
         .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 3)
@@ -200,7 +200,7 @@ struct FurnitureDPad: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(.ultraThinMaterial)
+                .fill(Color.hudFill)
                 .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
                 .frame(width: 116, height: 116)
                 .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)

@@ -1,25 +1,32 @@
 import SwiftUI
 import SceneKit
+import Combine
 #if canImport(UIKit)
 import UIKit
 
 // MARK: - SceneKit Bridge
 struct KostSceneView: UIViewRepresentable {
-    @ObservedObject var vm: KostViewModel
+    /// Sengaja tidak @ObservedObject: SCNView tidak perlu di-update tiap kali
+    /// state view model berubah (dulu updateUIView terpanggil puluhan kali per detik).
+    let vm: KostViewModel
 
     func makeUIView(context: Context) -> SCNView {
         let scene = makeScene()
         let view  = SCNView()
         view.scene                      = scene
         view.backgroundColor            = UIColor(red: 0.95, green: 0.93, blue: 0.90, alpha: 1)
-        view.antialiasingMode           = .multisampling4X
         view.autoenablesDefaultLighting = false
+        view.isJitteringEnabled         = false
 
         vm.scnView   = view
         vm.sceneRoot = scene.rootNode
         vm.spawnDefaultFurniture()          // adds characterNode + cameraNode to scene
 
         view.pointOfView = vm.cameraNode    // set AFTER cameraNode is in scene tree
+        vm.applyGraphics(AppSettings.shared.graphicsQuality)
+        context.coordinator.qualitySink = AppSettings.shared.$graphicsQuality
+            .dropFirst()
+            .sink { [weak vm] q in vm?.applyGraphics(q) }
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
         tap.delegate = context.coordinator
@@ -38,9 +45,7 @@ struct KostSceneView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: SCNView, context: Context) {
-        uiView.pointOfView = vm.cameraNode
-    }
+    func updateUIView(_ uiView: SCNView, context: Context) {}
 
     func makeCoordinator() -> Coordinator { Coordinator(vm: vm) }
 
@@ -49,6 +54,7 @@ struct KostSceneView: UIViewRepresentable {
         let vm: KostViewModel
         weak var tapGesture: UITapGestureRecognizer?
         weak var panGesture: UIPanGestureRecognizer?
+        var qualitySink: AnyCancellable?
 
         private var dragOffset: SIMD2<Float> = .zero
         private var panIsDragging = false
@@ -185,6 +191,8 @@ struct KostSceneView: UIViewRepresentable {
             geo.firstMaterial?.diffuse.contents = color
             geo.firstMaterial?.lightingModel = .lambert
             let n = SCNNode(geometry: geo); n.position = pos; n.name = name
+            // Dinding diberi kategori khusus supaya raycast kamera hanya mengecek dinding.
+            if name == "wall" { n.categoryBitMask = KostViewModel.wallCategory }
             scene.rootNode.addChildNode(n)
         }
 
@@ -204,12 +212,14 @@ struct KostSceneView: UIViewRepresentable {
         gridMat.diffuse.contents = UIColor(white: 0.4, alpha: 0.18)
         gridMat.lightingModel = .constant
         let gridStep: Float = 0.5
+        // Semua garis grid digabung jadi satu geometry (flattenedClone) → 1 draw call, bukan ±20.
+        let gridGroup = SCNNode()
         var gz = -roomD/2
         while gz <= roomD/2 {
             let lineGeo = SCNBox(width: CGFloat(roomW), height: 0.004, length: 0.012, chamferRadius: 0)
             lineGeo.materials = [gridMat]
             let ln = SCNNode(geometry: lineGeo); ln.position = SCNVector3(0, 0.005, gz)
-            scene.rootNode.addChildNode(ln)
+            gridGroup.addChildNode(ln)
             gz += gridStep
         }
         var gx = -roomW/2
@@ -217,9 +227,10 @@ struct KostSceneView: UIViewRepresentable {
             let lineGeo = SCNBox(width: 0.012, height: 0.004, length: CGFloat(roomD), chamferRadius: 0)
             lineGeo.materials = [gridMat]
             let ln = SCNNode(geometry: lineGeo); ln.position = SCNVector3(gx, 0.005, 0)
-            scene.rootNode.addChildNode(ln)
+            gridGroup.addChildNode(ln)
             gx += gridStep
         }
+        scene.rootNode.addChildNode(gridGroup.flattenedClone())
 
         // ── Ceiling ──
         box(roomW + wT*2, wT, roomD + wT*2, color: ceilColor, pos: SCNVector3(0, roomH + wT/2, 0), name: "wall")
@@ -345,7 +356,6 @@ struct KostSceneView: UIViewRepresentable {
         
         let stairBoxNode = SCNNode()
         stairBoxNode.position = SCNVector3(stairStart + stairW/2, 0, cCenterZ + corrDepth/2)
-        scene.rootNode.addChildNode(stairBoxNode)
         
         for i in 0..<stepCount {
             let sY = -Float(i+1) * stepH
@@ -357,6 +367,7 @@ struct KostSceneView: UIViewRepresentable {
             stN.position = SCNVector3(0, sY + stepH/2, sZ + stepD/2)
             stairBoxNode.addChildNode(stN)
         }
+        scene.rootNode.addChildNode(stairBoxNode.flattenedClone())
         
         // Dinding ruang tangga
         let sDepth = Float(stepCount) * stepD
@@ -587,6 +598,11 @@ struct KostSceneView: UIViewRepresentable {
         vm.winLightNode = winLightNode
         
         // ── Corridor Lights ──
+        // Hanya menyala saat pintu terbuka: tiap omni light menambah biaya per-pixel di seluruh scene.
+        let corridorLights = SCNNode()
+        corridorLights.isHidden = !vm.isDoorOpen
+        scene.rootNode.addChildNode(corridorLights)
+        vm.corridorLightsNode = corridorLights
         for cx in [-2.0, 0.0, 2.0] as [Float] {
             let cl = SCNLight(); cl.type = .omni
             cl.color = UIColor(red: 1.0, green: 0.95, blue: 0.85, alpha: 1)
@@ -595,7 +611,7 @@ struct KostSceneView: UIViewRepresentable {
             cl.attenuationEndDistance = 6.0
             let cln = SCNNode(); cln.light = cl
             cln.position = SCNVector3(cx, corrHeight - 0.2, cCenterZ)
-            scene.rootNode.addChildNode(cln)
+            corridorLights.addChildNode(cln)
         }
 
         // ── Saklar lampu — dinding depan, kanan pintu ──

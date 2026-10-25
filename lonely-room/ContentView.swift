@@ -10,14 +10,17 @@ struct SplashView: View {
 
     var body: some View {
         ZStack {
-            Color(.systemBackground).ignoresSafeArea()
+            // Warna sama dengan launch screen supaya transisinya mulus.
+            Color("LaunchBackground").ignoresSafeArea()
             VStack(spacing: 16) {
                 Image(systemName: "house.fill")
                     .font(.system(size: 64))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.white)
                 Text("Kost Simulator")
                     .font(.title.bold())
+                    .foregroundStyle(.white)
                 ProgressView()
+                    .tint(.white)
                     .padding(.top, 8)
             }
             .scaleEffect(scale)
@@ -60,7 +63,7 @@ struct WardrobeCustomizerView: View {
                 }
                 .pickerStyle(.segmented)
                 .colorScheme(.dark)
-                .onChange(of: vm.characterGender) { _ in
+                .onChange(of: vm.characterGender) {
                     vm.rebuildCharacterAppearance()
                 }
             }
@@ -71,6 +74,7 @@ struct WardrobeCustomizerView: View {
                 HStack(spacing: 12) {
                     ForEach(0..<3) { i in
                         Button {
+                            Haptics.select()
                             vm.characterStyleIndex = i
                             vm.rebuildCharacterAppearance()
                         } label: {
@@ -86,7 +90,7 @@ struct WardrobeCustomizerView: View {
             }
         }
         .padding(20)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .background(Color.hudFill, in: RoundedRectangle(cornerRadius: 24))
         .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.white.opacity(0.2), lineWidth: 1))
         .shadow(color: .black.opacity(0.3), radius: 12, x: 0, y: 6)
         .padding(.horizontal, 32)
@@ -109,46 +113,118 @@ struct WardrobeCustomizerView: View {
     }
 }
 
+// MARK: - Action Capsule
+/// Tombol aksi kontekstual (pintu, jendela, kasur, dst). Dulu ditulis ulang 7x di ContentView.
+private struct ActionCapsule: View {
+    let icon: String
+    let title: String
+    var width: CGFloat = 130
+    var iconTint: Color = .white
+    var strokeTint: Color = Color.white.opacity(0.3)
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(iconTint)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(minWidth: width, minHeight: 40)
+            .padding(.horizontal, 6)
+            .background(Color.hudFill, in: Capsule())
+            .overlay(Capsule().stroke(strokeTint, lineWidth: 1.5))
+            .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .transition(.scale(scale: 0.8).combined(with: .opacity))
+    }
+}
+
+// MARK: - Round HUD Button
+private struct RoundHUDButton: View {
+    let icon: String
+    let label: String
+    var size: CGFloat = 40
+    var fill: AnyShapeStyle = AnyShapeStyle(Color.hudFill)
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: size * 0.38, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: size, height: size)
+                .background(fill, in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
+                .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
 // MARK: - Content View
 struct ContentView: View {
     @StateObject private var vm             = KostViewModel()
     @StateObject private var weatherService = WeatherService()
+    @ObservedObject private var settings    = AppSettings.shared
 
-    @State private var moveDX: CGFloat   = 0
-    @State private var moveDY: CGFloat   = 0
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     @State private var camLastDragX: CGFloat = 0
 
     @State private var showCatalog      = false
     @State private var catalogWasOpen   = false
     @State private var showWardrobe     = false
+    @State private var showFocusStart   = false
+    @State private var showSettings     = false
+    @State private var showOnboarding   = false
+    @State private var splashTimedOut   = false
+    @State private var photo: UIImage?
+    @State private var flashOpacity: Double = 0
 
-    @State private var currentTime = Date()
-    @State private var lastTODHour = Calendar.current.component(.hour, from: Date())
-    @State var job: Timer?
-//    func startJob() {
-//        job = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
-//            print("Run job every 5 minutes")
-//            weatherService.fetch()
-//        }
-//    }
+    private var showSplash: Bool {
+        settings.hasOnboarded && weatherService.isLoading && !splashTimedOut
+    }
 
-    
-
-    private let timer      = Timer.publish(every: 1/60, on: .main, in: .common).autoconnect()
-    private let clockTimer = Timer.publish(every: 1,    on: .main, in: .common).autoconnect()
+    private var isBusy: Bool { vm.isLyingDown || vm.isSitting }
 
     var body: some View {
         ZStack {
-            if weatherService.isLoading {
-                SplashView()
-                    .transition(.opacity)
-            } else {
-                mainContent
-                    .transition(.opacity)
+            mainContent
+
+            if showSplash {
+                SplashView().transition(.opacity)
+            }
+
+            if showOnboarding {
+                OnboardingView { useLocation in
+                    settings.useLocationWeather = useLocation
+                    settings.hasOnboarded = true
+                    weatherService.fetch()
+                    withAnimation(.easeInOut(duration: 0.4)) { showOnboarding = false }
+                }
+                .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.6), value: weatherService.isLoading)
+        .animation(.easeInOut(duration: 0.6), value: showSplash)
+        .statusBarHidden()
+        .persistentSystemOverlays(.hidden)
         .onAppear {
+            AudioSessionManager.useAmbient()
             vm.onSelectionChanged = { item in
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
                     if item != nil {
@@ -159,24 +235,40 @@ struct ContentView: View {
                     }
                 }
             }
-            weatherService.fetch()
-            lastTODHour = Calendar.current.component(.hour, from: Date())
+            if settings.hasOnboarded {
+                weatherService.fetch()
+            } else {
+                showOnboarding = true
+            }
+            // Jangan tahan user di splash kalau jaringan lambat.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { splashTimedOut = true }
         }
-        .onReceive(timer) { _ in
-            if abs(moveDX) > 0.02 || abs(moveDY) > 0.02 {
-                vm.move(dx: Float(moveDX), dy: Float(moveDY))
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                weatherService.refreshIfStale()
+                vm.focus.refresh()
+                vm.startAmbientTicker()
+            case .background:
+                vm.releaseJoystick()
+                vm.stopAmbientTicker()
+                vm.saveFurniture()
+            default:
+                break
             }
         }
-        .onReceive(clockTimer) { date in
-            currentTime = date
-            let hour = Calendar.current.component(.hour, from: date)
-            if hour != lastTODHour {
-                lastTODHour = hour
-                vm.applyTimeOfDay()
-            }
+        .onChange(of: vm.isSitting) { _, sitting in
+            // Berdiri = jeda sesi fokus, duduk lagi = lanjut.
+            guard vm.focus.phase == .focus else { return }
+            sitting ? vm.focus.resume() : vm.focus.pause()
         }
         .onReceive(weatherService.$condition.compactMap { $0 }) { w in
             vm.applyWeather(w)
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(vm: vm, weather: weatherService) {
+                showOnboarding = true
+            }
         }
     }
 
@@ -188,21 +280,21 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             // ── Weather Overlays ──
-            RainOverlayView(condition: vm.weather)
-                .ignoresSafeArea()
-
-            // ── HUD: Weather (kiri atas) & Jam (kanan atas) ──
-            VStack(spacing: 0) {
-                HStack(alignment: .top) {
-                    WeatherBadgeView(condition: vm.weather, error: weatherService.errorMessage)
-                    Spacer()
-                    ClockView(date: currentTime)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                Spacer()
+            if settings.graphicsQuality.showsRainOverlay && !reduceMotion {
+                RainOverlayView(condition: vm.weather)
+                    .ignoresSafeArea()
             }
-            .allowsHitTesting(false)
+
+            // ── Focus panel: tengah atas ──
+            if vm.focus.isActive {
+                VStack {
+                    // FocusPanel mengobservasi timer sendiri → hitung mundur tidak me-render ulang ContentView.
+                    FocusPanel(focus: vm.focus, isSitting: vm.isSitting)
+                        .padding(.top, 14)
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
 
             // ── Action Bubbles + D-Pad: kanan bawah, di atas tombol + ──
             if let sel = vm.selectedFurniture, vm.pendingType == nil {
@@ -216,6 +308,7 @@ struct ContentView: View {
                             onRotateLeft:  { vm.rotateSelected(by: -.pi/4) },
                             onRotateRight: { vm.rotateSelected(by:  .pi/4) },
                             onDelete: {
+                                Haptics.warning()
                                 withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
                                     vm.deleteSelected()
                                 }
@@ -231,7 +324,6 @@ struct ContentView: View {
                     }
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .bottomTrailing)))
-                .allowsHitTesting(true)
             }
 
             // ── Stack Mode Banner: kanan tengah, compact ──
@@ -246,7 +338,6 @@ struct ContentView: View {
                     .padding(.trailing, 20)
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
-                .allowsHitTesting(true)
             }
 
             // ── Catalog Panel: atas, di bawah HUD ──
@@ -278,8 +369,7 @@ struct ContentView: View {
                             .onChanged { v in
                                 let curX = v.location.x
                                 if camLastDragX != 0 {
-                                    let delta = Float(curX - camLastDragX)
-                                    vm.rotateCamera(by: delta * 0.007)
+                                    vm.rotateCamera(by: Float(curX - camLastDragX) * 0.007)
                                 }
                                 camLastDragX = curX
                             }
@@ -288,261 +378,27 @@ struct ContentView: View {
             }
             .allowsHitTesting(vm.pendingType == nil && vm.selectedFurniture == nil && !showCatalog)
 
-            // ── Joystick (kiri bawah) + Tombol + (kanan bawah) ──
+            // Top bar di atas area drag kamera supaya tombol foto/pengaturan bisa ditekan.
+            topBar
+
+            // ── Joystick (kiri bawah) + Tombol aksi (kanan bawah) ──
             VStack(spacing: 0) {
                 Spacer()
                 HStack(alignment: .bottom) {
-                    // Joystick
-                    ZStack {
-                        JoystickView(size: 130) { dx, dy in
-                            moveDX = dx; moveDY = dy
-                        } onEnd: {
-                            moveDX = 0; moveDY = 0
-                            vm.stopWalking()
-                        }
-                        .opacity(vm.isLyingDown || vm.isSitting ? 0.35 : 1.0)
-                        .allowsHitTesting(!vm.isLyingDown && !vm.isSitting)
+                    JoystickView(size: 130) { dx, dy in
+                        vm.setJoystick(dx: Float(dx), dy: Float(dy))
+                    } onEnd: {
+                        vm.releaseJoystick()
                     }
+                    .opacity(isBusy ? 0.35 : 1.0)
+                    .allowsHitTesting(!isBusy)
                     .padding(.leading, 24)
+                    .accessibilityLabel("Joystick gerak")
 
                     Spacer()
 
-                    VStack(spacing: 10) {
-                        // Tombol Buka Lemari / Customizer
-                        if vm.isNearWardrobe && !vm.isLyingDown && !vm.isSitting {
-                            Button {
-                                withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                                    showWardrobe = true
-                                }
-                            } label: {
-                                ZStack {
-                                    Capsule()
-                                        .fill(.ultraThinMaterial)
-                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
-                                        .frame(width: 130, height: 40)
-                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "tshirt.fill")
-                                            .font(.system(size: 15, weight: .semibold))
-                                        Text("Ganti Baju")
-                                            .font(.system(size: 13, weight: .semibold))
-                                    }
-                                    .foregroundStyle(.white)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .transition(.scale(scale: 0.8).combined(with: .opacity))
-                        }
-
-                        // Tombol Pintu
-                        if vm.isNearDoor && !vm.isLyingDown && !vm.isSitting {
-                            Button {
-                                vm.toggleDoor()
-                            } label: {
-                                ZStack {
-                                    Capsule()
-                                        .fill(.ultraThinMaterial)
-                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
-                                        .frame(width: 130, height: 40)
-                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                    HStack(spacing: 6) {
-                                        Image(systemName: vm.isDoorOpen ? "door.left.hand.open" : "door.left.hand.closed")
-                                            .font(.system(size: 15, weight: .semibold))
-                                        Text(vm.isDoorOpen ? "Tutup Pintu" : "Buka Pintu")
-                                            .font(.system(size: 13, weight: .semibold))
-                                    }
-                                    .foregroundStyle(.white)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .transition(.scale(scale: 0.8).combined(with: .opacity))
-                        }
-
-                        // Tombol Jendela
-                        if vm.isNearWindow && !vm.isLyingDown && !vm.isSitting {
-                            Button {
-                                vm.toggleWindow()
-                            } label: {
-                                ZStack {
-                                    Capsule()
-                                        .fill(.ultraThinMaterial)
-                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
-                                        .frame(width: 130, height: 40)
-                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                    HStack(spacing: 6) {
-                                        Image(systemName: vm.isWindowOpen ? "window.casement.closed" : "window.casement")
-                                            .font(.system(size: 15, weight: .semibold))
-                                        Text(vm.isWindowOpen ? "Tutup Jendela" : "Buka Jendela")
-                                            .font(.system(size: 13, weight: .semibold))
-                                    }
-                                    .foregroundStyle(.white)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .transition(.scale(scale: 0.8).combined(with: .opacity))
-                        }
-
-                        // Tombol Lampu Tiang (on/off saja)
-                        if vm.isNearLamp && !vm.isLyingDown && !vm.isSitting {
-                            Button {
-                                vm.toggleLamp()
-                            } label: {
-                                ZStack {
-                                    Capsule()
-                                        .fill(.ultraThinMaterial)
-                                        .overlay(Capsule().stroke(
-                                            vm.isLampOn ? Color.yellow.opacity(0.6) : Color.white.opacity(0.3),
-                                            lineWidth: 1.5))
-                                        .frame(width: 130, height: 40)
-                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                    HStack(spacing: 6) {
-                                        Image(systemName: vm.isLampOn ? "lamp.floor.fill" : "lamp.floor")
-                                            .font(.system(size: 15, weight: .semibold))
-                                            .foregroundStyle(vm.isLampOn ? Color.yellow : Color.white)
-                                        Text(vm.isLampOn ? "Matikan Lampu" : "Nyalakan Lampu")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .transition(.scale(scale: 0.8).combined(with: .opacity))
-                        }
-
-                        // Tombol Duduk / Berdiri (kursi)
-                        if vm.isNearChair || vm.isSitting {
-                            Button {
-                                if vm.isSitting { vm.standUpChair() } else { vm.sitDown() }
-                            } label: {
-                                ZStack {
-                                    Capsule()
-                                        .fill(.ultraThinMaterial)
-                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
-                                        .frame(width: 110, height: 40)
-                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                    HStack(spacing: 6) {
-                                        Image(systemName: vm.isSitting ? "figure.stand" : "chair.lounge.fill")
-                                            .font(.system(size: 15, weight: .semibold))
-                                        Text(vm.isSitting ? "Berdiri" : "Duduk")
-                                            .font(.system(size: 13, weight: .semibold))
-                                    }
-                                    .foregroundStyle(.white)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .transition(.scale(scale: 0.8).combined(with: .opacity))
-                        }
-
-                        // Tombol Rebahan / Berdiri
-                        if vm.isNearBed || vm.isLyingDown {
-                            Button {
-                                if vm.isLyingDown {
-                                    vm.standUp()
-                                } else {
-                                    vm.layDown()
-                                }
-                            } label: {
-                                ZStack {
-                                    Capsule()
-                                        .fill(.ultraThinMaterial)
-                                        .overlay(Capsule().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
-                                        .frame(width: 110, height: 40)
-                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                    HStack(spacing: 6) {
-                                        Image(systemName: vm.isLyingDown ? "figure.stand" : "bed.double.fill")
-                                            .font(.system(size: 15, weight: .semibold))
-                                        Text(vm.isLyingDown ? "Berdiri" : "Rebahan")
-                                            .font(.system(size: 13, weight: .semibold))
-                                    }
-                                    .foregroundStyle(.white)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .transition(.scale(scale: 0.8).combined(with: .opacity))
-                        }
-
-                        // Tombol Siram Tanaman
-                        if vm.isNearPlant || vm.isWatering {
-                            Button {
-                                vm.waterPlant()
-                            } label: {
-                                ZStack {
-                                    Capsule()
-                                        .fill(.ultraThinMaterial)
-                                        .overlay(Capsule().stroke(
-                                            vm.isWatering ? Color.cyan.opacity(0.6) : Color.white.opacity(0.3),
-                                            lineWidth: 1.5))
-                                        .frame(width: 130, height: 40)
-                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                    HStack(spacing: 6) {
-                                        Image(systemName: vm.isWatering ? "drop.fill" : "drop")
-                                            .font(.system(size: 15, weight: .semibold))
-                                            .foregroundStyle(vm.isWatering ? Color.cyan : Color.white)
-                                        Text(vm.isWatering ? "Menyiram..." : "Siram Tanaman")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(vm.isWatering)
-                            .transition(.scale(scale: 0.8).combined(with: .opacity))
-                        }
-
-                        if !vm.isLyingDown && !vm.isSitting {
-                            // Tombol Edit Mode
-                            Button {
-                                withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                                    vm.toggleEditMode()
-                                    if !vm.isEditMode {
-                                        showCatalog = false
-                                        vm.pendingType = nil
-                                        vm.selectFurniture(nil)
-                                    }
-                                }
-                            } label: {
-                                ZStack {
-                                    Circle()
-                                        .fill(vm.isEditMode ? AnyShapeStyle(Color.orange.opacity(0.9)) : AnyShapeStyle(.ultraThinMaterial))
-                                        .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
-                                        .frame(width: 58, height: 58)
-                                        .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                    Image(systemName: vm.isEditMode ? "lock.open.fill" : "lock.fill")
-                                        .font(.system(size: 20, weight: .semibold))
-                                        .foregroundStyle(.white)
-                                }
-                            }
-                            .buttonStyle(.plain)
-
-                            // Tombol buka/tutup catalog
-                            if vm.isEditMode {
-                                Button {
-                                    withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-                                        showCatalog.toggle()
-                                        if !showCatalog {
-                                            vm.pendingType = nil
-                                            vm.selectFurniture(nil)
-                                        }
-                                    }
-                                } label: {
-                                    ZStack {
-                                        Circle()
-                                            .fill(.ultraThinMaterial)
-                                            .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 1.5))
-                                            .frame(width: 58, height: 58)
-                                            .shadow(color: .black.opacity(0.25), radius: 8, x: 0, y: 4)
-                                        Image(systemName: showCatalog ? "xmark" : "plus")
-                                            .font(.system(size: 22, weight: .semibold))
-                                            .foregroundStyle(.white)
-                                            .rotationEffect(.degrees(showCatalog ? 0 : 0))
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                .transition(.scale(scale: 0.8).combined(with: .opacity))
-                            }
-                        }
-                    }
-                    .padding(.trailing, 24)
+                    actionColumn
+                        .padding(.trailing, 24)
                 }
                 .padding(.bottom, 32)
             }
@@ -559,7 +415,6 @@ struct ContentView: View {
                     }
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
-                .allowsHitTesting(true)
                 .animation(.spring(response: 0.35, dampingFraction: 0.75), value: vm.isNearSwitch)
             }
 
@@ -575,23 +430,195 @@ struct ContentView: View {
                     }
                 }
                 .transition(.move(edge: .leading).combined(with: .opacity))
-                .allowsHitTesting(true)
                 .animation(.spring(response: 0.35, dampingFraction: 0.75), value: vm.isNearMusicPlayer)
             }
-            
+
             // ── Wardrobe Panel Overlay ──
             if showWardrobe {
                 Color.black.opacity(0.3)
                     .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation { showWardrobe = false }
-                    }
-                
+                    .onTapGesture { withAnimation { showWardrobe = false } }
+
                 WardrobeCustomizerView(vm: vm) {
                     withAnimation { showWardrobe = false }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+
+            // ── Focus start card ──
+            if showFocusStart {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                    .onTapGesture { withAnimation { showFocusStart = false } }
+
+                FocusStartCard { minutes in
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                        showFocusStart = false
+                        vm.focus.startFocus(minutes: minutes)
+                    }
+                    if settings.autoLofiOnFocus && !MusicPlayer.shared.isPlaying {
+                        MusicPlayer.shared.play()
+                    }
+                } onCancel: {
+                    withAnimation { showFocusStart = false }
+                }
+                .transition(.scale(scale: 0.9).combined(with: .opacity))
+            }
+
+            // ── Photo flash + preview ──
+            Color.white
+                .opacity(flashOpacity)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+
+            if let photo {
+                PhotoPreviewView(image: photo) {
+                    withAnimation(.easeOut(duration: 0.25)) { self.photo = nil }
+                }
+                .transition(.scale(scale: 0.85).combined(with: .opacity))
+            }
+        }
+    }
+
+    // MARK: - Top Bar
+    private var topBar: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    WeatherBadgeView(condition: vm.weather,
+                                     error: weatherService.errorMessage,
+                                     placeName: weatherService.placeName)
+                        .allowsHitTesting(false)
+                    if settings.showNeedsHUD && !vm.isEditMode {
+                        NeedsHUDView(needs: vm.needs,
+                                     hasPlant: vm.furnitureItems.contains { $0.type == .plant })
+                            .transition(.opacity)
+                    }
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 8) {
+                    ClockView()
+                        .allowsHitTesting(false)
+                    HStack(spacing: 8) {
+                        RoundHUDButton(icon: "camera.fill", label: "Foto kamar") { takePhoto() }
+                        RoundHUDButton(icon: "gearshape.fill", label: "Pengaturan") { showSettings = true }
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            Spacer()
+        }
+    }
+
+    // MARK: - Action Column
+    @ViewBuilder
+    private var actionColumn: some View {
+        VStack(alignment: .trailing, spacing: 10) {
+            if vm.isNearWardrobe && !isBusy {
+                ActionCapsule(icon: "tshirt.fill", title: "Ganti Baju") {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) { showWardrobe = true }
+                }
+            }
+
+            if vm.isNearDoor && !isBusy {
+                ActionCapsule(icon: vm.isDoorOpen ? "door.left.hand.open" : "door.left.hand.closed",
+                              title: vm.isDoorOpen ? "Tutup Pintu" : "Buka Pintu") {
+                    vm.toggleDoor()
+                }
+            }
+
+            if vm.isNearWindow && !isBusy {
+                ActionCapsule(icon: vm.isWindowOpen ? "window.casement.closed" : "window.casement",
+                              title: vm.isWindowOpen ? "Tutup Jendela" : "Buka Jendela") {
+                    vm.toggleWindow()
+                }
+            }
+
+            if vm.isNearLamp && !isBusy {
+                ActionCapsule(icon: vm.isLampOn ? "lamp.floor.fill" : "lamp.floor",
+                              title: vm.isLampOn ? "Matikan Lampu" : "Nyalakan Lampu",
+                              iconTint: vm.isLampOn ? .yellow : .white,
+                              strokeTint: vm.isLampOn ? Color.yellow.opacity(0.6) : Color.white.opacity(0.3)) {
+                    vm.toggleLamp()
+                }
+            }
+
+            if vm.isSitting && !vm.focus.isActive {
+                ActionCapsule(icon: "timer", title: "Mulai Fokus",
+                              iconTint: .orange, strokeTint: Color.orange.opacity(0.6)) {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { showFocusStart = true }
+                }
+            }
+
+            if vm.isNearChair || vm.isSitting {
+                ActionCapsule(icon: vm.isSitting ? "figure.stand" : "chair.lounge.fill",
+                              title: vm.isSitting ? "Berdiri" : "Duduk", width: 110) {
+                    if vm.isSitting { vm.standUpChair() } else { vm.sitDown() }
+                }
+            }
+
+            if vm.isNearBed || vm.isLyingDown {
+                ActionCapsule(icon: vm.isLyingDown ? "figure.stand" : "bed.double.fill",
+                              title: vm.isLyingDown ? "Berdiri" : "Rebahan", width: 110) {
+                    if vm.isLyingDown { vm.standUp() } else { vm.layDown() }
+                }
+            }
+
+            if vm.isNearPlant || vm.isWatering {
+                ActionCapsule(icon: vm.isWatering ? "drop.fill" : "drop",
+                              title: vm.isWatering ? "Menyiram..." : "Siram Tanaman",
+                              iconTint: vm.isWatering ? .cyan : .white,
+                              strokeTint: vm.isWatering ? Color.cyan.opacity(0.6) : Color.white.opacity(0.3)) {
+                    vm.waterPlant()
+                }
+                .disabled(vm.isWatering)
+            }
+
+            if !isBusy {
+                HStack(spacing: 10) {
+                    if vm.isEditMode {
+                        RoundHUDButton(icon: showCatalog ? "xmark" : "plus",
+                                       label: showCatalog ? "Tutup katalog" : "Tambah furnitur",
+                                       size: 58) {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                                showCatalog.toggle()
+                                if !showCatalog {
+                                    vm.pendingType = nil
+                                    vm.selectFurniture(nil)
+                                }
+                            }
+                        }
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                    }
+                    RoundHUDButton(icon: vm.isEditMode ? "lock.open.fill" : "lock.fill",
+                                   label: vm.isEditMode ? "Selesai edit" : "Mode edit",
+                                   size: 58,
+                                   fill: vm.isEditMode ? AnyShapeStyle(Color.orange.opacity(0.9))
+                                                       : AnyShapeStyle(Color.hudFill)) {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                            vm.toggleEditMode()
+                            if !vm.isEditMode {
+                                showCatalog = false
+                                vm.pendingType = nil
+                                vm.selectFurniture(nil)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Photo
+    private func takePhoto() {
+        guard let shot = vm.captureRoomSnapshot() else { return }
+        Haptics.thump()
+        flashOpacity = 0.85
+        withAnimation(.easeOut(duration: 0.45)) { flashOpacity = 0 }
+        let composed = RoomPhoto.compose(shot)
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.8).delay(0.15)) {
+            photo = composed
         }
     }
 }

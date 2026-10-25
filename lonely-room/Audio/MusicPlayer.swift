@@ -18,21 +18,28 @@ final class MusicPlayer: NSObject, ObservableObject {
     private var progressTimer: Timer?
     private var assetNames:    [String] = []
     private var assetTitles:   [String] = []
+    private var cancellables = Set<AnyCancellable>()
 
     private override init() {
         super.init()
-        configureAudioSession()
         setupRemoteCommandCenter()
         loadAssetQueue()
+
+        AppSettings.shared.$musicVolume
+            .sink { [weak self] v in self?.player?.volume = Float(v) }
+            .store(in: &cancellables)
+
+        // Telepon masuk / Siri dll — sinkronkan state tombol play.
+        NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
+            .sink { [weak self] note in
+                guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+                self?.pause()
+            }
+            .store(in: &cancellables)
     }
 
-    // MARK: - Audio Session
-    private func configureAudioSession() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-        try? AVAudioSession.sharedInstance().setActive(true)
-    }
-
-    // MARK: - Auto-load radio-* dari Asset Catalog
+    // MARK: - Asset queue
     func loadAssetQueue() {
         // Nama asset = nama folder .dataset (tanpa ekstensi)
         let entries: [(name: String, title: String)] = [
@@ -42,27 +49,32 @@ final class MusicPlayer: NSObject, ObservableObject {
             ("radio-top-flow-deep-breathing-148302",                      "Deep Breathing"),
             ("radio-watermello-lofi-chill-lofi-girl-lofi-488388",         "Lofi Chill"),
         ]
-
-        assetNames  = []
-        assetTitles = []
-        for entry in entries {
-            if NSDataAsset(name: entry.name) != nil {
-                assetNames.append(entry.name)
-                assetTitles.append(entry.title)
-            }
-        }
-        queueCount = assetNames.count
-        queueIndex = 0
+        // Cukup cek keberadaan via NSDataAsset tanpa menyimpan datanya di memori.
+        let available = entries.filter { NSDataAsset(name: $0.name) != nil }
+        assetNames  = available.map(\.name)
+        assetTitles = available.map(\.title)
+        queueCount  = assetNames.count
+        queueIndex  = 0
     }
 
     // MARK: - Playback control
     func play() {
-        if player == nil { playCurrentItem() }
-        else { player?.play(); isPlaying = true; startProgressTimer() }
+        AudioSessionManager.useMusicPlayback()
+        if player == nil { playCurrentItem(); return }
+        player?.play()
+        isPlaying = true
+        startProgressTimer()
+        updateNowPlaying()
     }
 
     func pause() {
-        player?.pause(); isPlaying = false; stopProgressTimer()
+        guard isPlaying else { return }
+        player?.pause()
+        isPlaying = false
+        stopProgressTimer()
+        updateNowPlaying()
+        // Kembalikan ke ambient supaya musik app lain bisa lanjut.
+        AudioSessionManager.useAmbient()
     }
 
     func togglePlayPause() { isPlaying ? pause() : play() }
@@ -85,28 +97,24 @@ final class MusicPlayer: NSObject, ObservableObject {
         }
     }
 
-    func stop() {
-        player?.stop(); player = nil
-        isPlaying = false; stopProgressTimer()
-        currentTitle = "Belum ada lagu"
-        progress = 0; duration = 0
-    }
-
     // MARK: - Play
-    func playCurrentItem() {
+    private func playCurrentItem() {
         guard !assetNames.isEmpty else { return }
         let name = assetNames[queueIndex]
         guard let asset = NSDataAsset(name: name),
               let p = try? AVAudioPlayer(data: asset.data, fileTypeHint: "mp3")
-        else { next(); return }
+        else { return }
 
+        AudioSessionManager.useMusicPlayback()
         player?.stop()
         p.delegate = self
+        p.volume = Float(AppSettings.shared.musicVolume)
         p.prepareToPlay()
         p.play()
         player       = p
         currentTitle = assetTitles[queueIndex]
         duration     = p.duration
+        progress     = 0
         isPlaying    = true
         startProgressTimer()
         updateNowPlaying()
@@ -115,10 +123,11 @@ final class MusicPlayer: NSObject, ObservableObject {
     // MARK: - Progress
     private func startProgressTimer() {
         stopProgressTimer()
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self, let p = self.player, p.duration > 0 else { return }
             self.progress = p.currentTime / p.duration
         }
+        progressTimer?.tolerance = 0.2
     }
 
     private func stopProgressTimer() { progressTimer?.invalidate(); progressTimer = nil }
@@ -128,16 +137,18 @@ final class MusicPlayer: NSObject, ObservableObject {
         let cc = MPRemoteCommandCenter.shared()
         cc.playCommand.addTarget          { [weak self] _ in self?.play();     return .success }
         cc.pauseCommand.addTarget         { [weak self] _ in self?.pause();    return .success }
+        cc.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlayPause(); return .success }
         cc.nextTrackCommand.addTarget     { [weak self] _ in self?.next();     return .success }
         cc.previousTrackCommand.addTarget { [weak self] _ in self?.previous(); return .success }
     }
 
     private func updateNowPlaying() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [
-            MPMediaItemPropertyTitle:            currentTitle,
-            MPMediaItemPropertyArtist:           "Radio Kamar",
-            MPMediaItemPropertyPlaybackDuration: duration,
-            MPNowPlayingInfoPropertyPlaybackRate: 1.0
+            MPMediaItemPropertyTitle:                    currentTitle,
+            MPMediaItemPropertyArtist:                   "Radio Kamar",
+            MPMediaItemPropertyPlaybackDuration:         duration,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: player?.currentTime ?? 0,
+            MPNowPlayingInfoPropertyPlaybackRate:        isPlaying ? 1.0 : 0.0
         ]
     }
 }

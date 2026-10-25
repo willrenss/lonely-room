@@ -12,7 +12,7 @@ struct JoystickView: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(.ultraThinMaterial)
+                .fill(Color.hudFill)
                 .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1.5))
                 .frame(width: size, height: size)
             Circle()

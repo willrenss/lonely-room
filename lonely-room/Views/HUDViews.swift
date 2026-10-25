@@ -1,21 +1,35 @@
 import SwiftUI
 
 // MARK: - Clock View
+/// Jam yang meng-update dirinya sendiri lewat TimelineView, jadi hanya view kecil ini
+/// yang re-render tiap detik — bukan seluruh ContentView seperti sebelumnya.
 struct ClockView: View {
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            ClockFace(date: context.date)
+        }
+    }
+}
+
+private struct ClockFace: View {
     var date: Date
 
-    private var timeString: String {
+    // DateFormatter mahal dibuat — cukup sekali.
+    private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
-        return f.string(from: date)
-    }
+        return f
+    }()
 
-    private var dateString: String {
+    private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "id_ID")
         f.dateFormat = "EEE, d MMM"
-        return f.string(from: date)
-    }
+        return f
+    }()
+
+    private var timeString: String { Self.timeFormatter.string(from: date) }
+    private var dateString: String { Self.dateFormatter.string(from: date) }
 
     private var tod: TimeOfDay {
         TimeOfDay.from(hour: Calendar.current.component(.hour, from: date))
@@ -44,6 +58,7 @@ struct ClockView: View {
                 .foregroundStyle(todColor)
             Text(timeString)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .monospacedDigit()
                 .foregroundStyle(.white)
             Text("·")
                 .font(.caption2)
@@ -53,8 +68,10 @@ struct ClockView: View {
                 .foregroundStyle(.white.opacity(0.75))
         }
         .padding(.horizontal, 13).padding(.vertical, 7)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Color.hudFill, in: Capsule())
         .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Jam \(timeString), \(dateString)")
     }
 }
 
@@ -62,6 +79,7 @@ struct ClockView: View {
 struct WeatherBadgeView: View {
     var condition: WeatherCondition?
     var error: String?
+    var placeName: String = "Tangsel"
 
     var body: some View {
         HStack(spacing: 6) {
@@ -81,7 +99,8 @@ struct WeatherBadgeView: View {
                 Text("·")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.35))
-                Text("Tangsel")
+                Text(placeName)
+                    .lineLimit(1)
                     .font(.system(size: 11))
                     .foregroundStyle(.white.opacity(0.6))
             } else if error != nil {
@@ -96,7 +115,7 @@ struct WeatherBadgeView: View {
             }
         }
         .padding(.horizontal, 13).padding(.vertical, 7)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Color.hudFill, in: Capsule())
         .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 2)
     }
 }
@@ -211,7 +230,7 @@ struct MusicPlayerPanel: View {
             }
             .padding(.bottom, 10)
         }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .background(Color.hudFill, in: RoundedRectangle(cornerRadius: 20))
         .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.12), lineWidth: 1))
         .shadow(color: .black.opacity(0.3), radius: 16, x: 0, y: 8)
         .frame(width: 260)
@@ -267,7 +286,7 @@ struct LightSwitchPanel: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.hudFill, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.15), lineWidth: 1))
         .shadow(color: .black.opacity(0.2), radius: 12, x: 0, y: 6)
         .frame(width: 220)
