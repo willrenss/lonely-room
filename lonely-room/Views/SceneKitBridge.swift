@@ -407,12 +407,16 @@ struct KostSceneView: UIViewRepresentable {
             m.transparency      = 0.72
             m.isDoubleSided     = true
             m.lightingModel     = .constant
+            // Kaca transparan tidak boleh menulis depth, kalau tidak partikel hujan
+            // di luar jendela ikut tertutup dan tidak pernah terlihat.
+            m.writesToDepthBuffer = false
             return m
         }
         let glassGeoL = SCNBox(width: halfW, height: CGFloat(wH), length: 0.008, chamferRadius: 0)
         glassGeoL.materials = [glassMat()]
         let glassPanelL = SCNNode(geometry: glassGeoL)
         glassPanelL.position = SCNVector3(wCx - Float(halfW)/2, wCy, innerBack + 0.02)
+        glassPanelL.renderingOrder = 5
         scene.rootNode.addChildNode(glassPanelL)
         vm.windowPanelL = glassPanelL
         vm.windowPanelLOriginX = glassPanelL.position.x
@@ -421,9 +425,12 @@ struct KostSceneView: UIViewRepresentable {
         glassGeoR.materials = [glassMat()]
         let glassPanelR = SCNNode(geometry: glassGeoR)
         glassPanelR.position = SCNVector3(wCx + Float(halfW)/2, wCy, innerBack + 0.02)
+        glassPanelR.renderingOrder = 5
         scene.rootNode.addChildNode(glassPanelR)
         vm.windowPanelR = glassPanelR
         vm.windowPanelROriginX = glassPanelR.position.x
+        vm.attachGlassRain(to: glassPanelL, width: halfW, height: CGFloat(wH))
+        vm.attachGlassRain(to: glassPanelR, width: halfW, height: CGFloat(wH))
 
         // ── Curtains — kain tirai yang bisa berayun saat angin ──
         // Tirai dipasang di kiri dan kanan jendela, pivot di ujung atas
@@ -500,6 +507,15 @@ struct KostSceneView: UIViewRepresentable {
 
         let curtainPivotL = makeCurtainPanel(isLeft: true)
         let curtainPivotR = makeCurtainPanel(isLeft: false)
+        // Tirai tipis digambar paling akhir tanpa menulis depth, supaya tetesan
+        // hujan di kaca (di belakangnya) tetap terlihat.
+        for pivot in [curtainPivotL, curtainPivotR] {
+            pivot.enumerateHierarchy { node, _ in
+                guard node.geometry != nil else { return }
+                node.renderingOrder = 15
+                node.geometry?.materials.forEach { $0.writesToDepthBuffer = false }
+            }
+        }
         scene.rootNode.addChildNode(curtainPivotL)
         scene.rootNode.addChildNode(curtainPivotR)
         vm.curtainL = curtainPivotL

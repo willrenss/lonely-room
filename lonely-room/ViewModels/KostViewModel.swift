@@ -108,6 +108,9 @@ class KostViewModel: ObservableObject {
     
     /// Status hujan terakhir, dipakai saat kualitas grafis berubah.
     private var rainIsHeavy = false
+    private var isRaining = false
+    /// Layer tetesan hujan di kaca jendela (lihat GlassRain.swift).
+    var glassRainNodes: [SCNNode] = []
 
     // ── Fitur: kebutuhan karakter & Pomodoro ──
     let needs = NeedsStore()
@@ -904,6 +907,7 @@ class KostViewModel: ObservableObject {
         panelL.opacity = isWindowOpen ? 0.25 : 0.72
         panelR.opacity = isWindowOpen ? 0.25 : 0.72
         SCNTransaction.commit()
+        updateGlassRain(raining: isRaining, heavy: rainIsHeavy)
 
         // Animasi tirai berbasis pivot — tirai berayun dari ujung atas seperti tertiup angin
         if isWindowOpen {
@@ -1654,6 +1658,8 @@ class KostViewModel: ObservableObject {
         
         // Unhide 3D rain particles out the window to replace the slow CPU texture
         rainIsHeavy = heavy
+        isRaining = true
+        updateGlassRain(raining: true, heavy: heavy || storm)
         rainParticleNode?.isHidden = false
         rainParticleNode?.particleSystems?.first?.birthRate =
             (heavy ? 600 : 250) * AppSettings.shared.graphicsQuality.particleScale
@@ -1677,6 +1683,8 @@ class KostViewModel: ObservableObject {
     }
     
     func stopRainAnimation() {
+        isRaining = false
+        updateGlassRain(raining: false, heavy: false)
         rainParticleNode?.isHidden = true
     }
     
@@ -1684,8 +1692,9 @@ class KostViewModel: ObservableObject {
     
     func makeRainParticleSystem(heavy: Bool = true) -> SCNParticleSystem {
         let ps = SCNParticleSystem()
-        ps.particleSize = 0.008; ps.particleSizeVariation = 0.003
-        ps.particleColor = UIColor(red: 0.72, green: 0.88, blue: 1.0, alpha: 0.65)
+        ps.particleSize = 0.02; ps.particleSizeVariation = 0.006
+        // Warna lebih gelap + blend alpha: versi additive putih tidak terlihat di langit mendung.
+        ps.particleColor = UIColor(red: 0.42, green: 0.52, blue: 0.66, alpha: 0.85)
         ps.particleColorVariation = SCNVector4(0.02, 0.05, 0.05, 0.10)
         ps.birthRate = heavy ? 600 : 250; ps.birthRateVariation = 30
         ps.emissionDuration = .greatestFiniteMagnitude; ps.loops = true
@@ -1694,7 +1703,7 @@ class KostViewModel: ObservableObject {
         ps.particleLifeSpan = 0.55; ps.particleLifeSpanVariation = 0.15
         ps.particleVelocity = 5.0; ps.particleVelocityVariation = 0.6
         ps.isAffectedByGravity = true; ps.acceleration = SCNVector3(0.2, -9.8, 0)
-        ps.blendMode = .additive; ps.orientationMode = .free; ps.stretchFactor = 0.10
+        ps.blendMode = .alpha; ps.orientationMode = .free; ps.stretchFactor = 0.06
         return ps
     }
     

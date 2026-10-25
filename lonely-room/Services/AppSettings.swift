@@ -48,9 +48,6 @@ enum GraphicsQuality: String, CaseIterable, Identifiable {
         case .high:     return 1.0
         }
     }
-
-    /// Overlay hujan full-screen (Canvas 60fps) hanya untuk kualitas di atas Hemat.
-    var showsRainOverlay: Bool { self != .battery }
 }
 
 // MARK: - App Settings

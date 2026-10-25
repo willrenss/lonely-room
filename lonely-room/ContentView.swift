@@ -182,7 +182,6 @@ struct ContentView: View {
     @ObservedObject private var settings    = AppSettings.shared
 
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var camLastDragX: CGFloat = 0
 
@@ -278,12 +277,6 @@ struct ContentView: View {
             // ── Scene ──
             KostSceneView(vm: vm)
                 .ignoresSafeArea()
-
-            // ── Weather Overlays ──
-            if settings.graphicsQuality.showsRainOverlay && !reduceMotion {
-                RainOverlayView(condition: vm.weather)
-                    .ignoresSafeArea()
-            }
 
             // ── Focus panel: tengah atas ──
             if vm.focus.isActive {
