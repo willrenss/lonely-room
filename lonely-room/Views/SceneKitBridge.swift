@@ -20,6 +20,8 @@ struct KostSceneView: UIViewRepresentable {
 
         vm.scnView   = view
         vm.sceneRoot = scene.rootNode
+        vm.motion.root = scene.rootNode
+        view.delegate  = vm.motion          // gerak karakter di render loop
         vm.spawnDefaultFurniture()          // adds characterNode + cameraNode to scene
 
         view.pointOfView = vm.cameraNode    // set AFTER cameraNode is in scene tree

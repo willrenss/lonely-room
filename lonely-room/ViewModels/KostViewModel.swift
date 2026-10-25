@@ -7,27 +7,23 @@ class KostViewModel: ObservableObject {
     let cameraNode     = SCNNode()
     let characterNode  = SCNNode()
     let cameraPivot    = SCNNode()   // pivot untuk orbit kamera, terpisah dari karakter
-    var yaw: Float     = 0
-    var charFacing: Float = 0
-    let speed: Float   = 0.06
-    // Dinding inner: X ±2.8, Z ±1.8. Kamera ideal di belakang 2m.
-    // Karakter dibatasi lebih ketat agar kamera tidak pernah menyentuh dinding.
-    let minX: Float    = -2.0, maxX: Float =  2.0
-    let minZ: Float    = -1.0, maxZ: Float =  1.0
-    
-    // Bounds for corridor (when door is open)
-    let corridorMinX: Float = -3.8
-    let corridorMaxX: Float = 3.8
-    let corridorMinZ: Float = 1.0
-    let corridorMaxZ: Float = 3.2
-    
-    // Pintu
-    let doorMinX: Float = 0.8
-    let doorMaxX: Float = 2.2
-    
+    /// Gerak karakter & kamera di render loop SceneKit (lihat CharacterMotion.swift).
+    private(set) lazy var motion = CharacterMotion(character: characterNode, pivot: cameraPivot, camera: cameraNode)
+    /// Yaw kamera & arah hadap karakter disimpan di `motion` karena juga dipakai render thread.
+    var yaw: Float {
+        get { motion.yaw }
+        set { motion.yaw = newValue }
+    }
+    var charFacing: Float {
+        get { motion.charFacing }
+        set { motion.charFacing = newValue }
+    }
+
     @Published var isWalking         = false
     @Published var isNearBed         = false
-    @Published var isLyingDown       = false
+    @Published var isLyingDown       = false {
+        didSet { motion.isLyingDown = isLyingDown; motion.canWalk = !isLyingDown && !isSitting }
+    }
     @Published var isNearSwitch      = false
     @Published var isLightOn: Bool = {
         if UserDefaults.standard.object(forKey: "isLightOn") != nil {
@@ -43,11 +39,15 @@ class KostViewModel: ObservableObject {
     }()
     @Published var isNearMusicPlayer = false
     @Published var isNearChair       = false
-    @Published var isSitting         = false
+    @Published var isSitting         = false {
+        didSet { motion.canWalk = !isLyingDown && !isSitting }
+    }
     @Published var isNearWindow      = false
     @Published var isWindowOpen      = false
     @Published var isNearDoor        = false
-    @Published var isDoorOpen        = false
+    @Published var isDoorOpen        = false {
+        didSet { motion.isDoorOpen = isDoorOpen }
+    }
     @Published var isNearLamp        = false
     @Published var isLampOn: Bool = {
         if UserDefaults.standard.object(forKey: "isLampOn") != nil {
@@ -103,7 +103,7 @@ class KostViewModel: ObservableObject {
     weak var corridorLightsNode: SCNNode?
 
     /// categoryBitMask untuk node dinding (dipakai raycast kamera).
-    static let wallCategory = 1 << 1
+    nonisolated static let wallCategory = 1 << 1
     var switchWorldPos: SIMD3<Float> = .zero
     
     /// Status hujan terakhir, dipakai saat kualitas grafis berubah.
@@ -115,12 +115,6 @@ class KostViewModel: ObservableObject {
     // ── Fitur: kebutuhan karakter & Pomodoro ──
     let needs = NeedsStore()
     let focus = FocusTimer()
-
-    // ── Input loop (joystick) ──
-    private var joystick = SIMD2<Float>.zero
-    private var displayLink: CADisplayLink?
-    private var lastFrameTime: CFTimeInterval = 0
-    private var proximityElapsed: CFTimeInterval = 0
 
     // ── Ticker ringan untuk jam/kebutuhan (5 detik, bukan per frame) ──
     private var ambientTimer: Timer?
@@ -153,6 +147,9 @@ class KostViewModel: ObservableObject {
         cameraPivot.position      = SCNVector3(0, 0, 0)
         cameraPivot.eulerAngles.y = 0
 
+        motion.onWalkingChanged = { [weak self] moving in self?.setWalking(moving) }
+        motion.onProximityTick  = { [weak self] in self?.refreshProximity() }
+
         focus.onFocusCompleted = { [weak self] minutes in
             self?.needs.focusCompleted(minutes: minutes)
         }
@@ -165,7 +162,6 @@ class KostViewModel: ObservableObject {
     }
 
     deinit {
-        displayLink?.invalidate()
         ambientTimer?.invalidate()
     }
 
@@ -188,35 +184,33 @@ class KostViewModel: ObservableObject {
         checkNearWardrobe()
     }
 
-    // MARK: - Joystick Input Loop
+    // MARK: - Joystick Input
 
-    /// Joystick hanya menyimpan nilai; gerakan dijalankan oleh CADisplayLink yang
-    /// aktif hanya selama joystick ditekan (dulu: Timer 60Hz di ContentView yang
-    /// jalan terus dan memicu re-render SwiftUI tiap drag).
+    /// Joystick hanya menyimpan nilai; langkahnya dihitung CharacterMotion di render loop.
+    /// Selama joystick ditekan SCNView dipaksa render terus supaya delegate dipanggil tiap frame.
     func setJoystick(dx: Float, dy: Float) {
-        joystick = SIMD2(dx, dy)
-        guard displayLink == nil else { return }
-        lastFrameTime = 0
-        let link = CADisplayLink(target: DisplayLinkProxy { [weak self] link in self?.stepFrame(link) },
-                                 selector: #selector(DisplayLinkProxy.tick(_:)))
-        let maxFPS = Float(AppSettings.shared.graphicsQuality.framesPerSecond)
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: min(30, maxFPS), maximum: maxFPS, preferred: maxFPS)
-        link.add(to: .main, forMode: .common)
-        displayLink = link
+        motion.setInput(SIMD2(dx, dy))
+        if scnView?.rendersContinuously == false { scnView?.rendersContinuously = true }
     }
 
     func releaseJoystick() {
-        joystick = .zero
-        displayLink?.invalidate()
-        displayLink = nil
+        motion.setInput(.zero)
+        scnView?.rendersContinuously = false
         stopWalking()
     }
 
-    private func stepFrame(_ link: CADisplayLink) {
-        let dt = lastFrameTime == 0 ? 1.0 / 60 : min(link.timestamp - lastFrameTime, 1.0 / 20)
-        lastFrameTime = link.timestamp
-        guard abs(joystick.x) > 0.02 || abs(joystick.y) > 0.02 else { return }
-        move(dx: joystick.x, dy: joystick.y, dt: dt)
+    /// Dipanggil (di main thread) oleh CharacterMotion saat mulai/berhenti jalan.
+    private func setWalking(_ moving: Bool) {
+        guard isWalking != moving else { return }
+        isWalking = moving
+        if moving {
+            FootstepPlayer.shared.start()
+            startWalkAnimation()
+        } else {
+            FootstepPlayer.shared.stop()
+            stopWalkAnimation()
+            refreshProximity()
+        }
     }
 
     // MARK: - Ambient Ticker
@@ -323,238 +317,13 @@ class KostViewModel: ObservableObject {
 
     // MARK: - TPP Camera
     func updateCameraForTPP() {
-        if isLyingDown { return } // Do not update TPP when in FPP (lying down)
-        
-        cameraPivot.position = SCNVector3(
-            characterNode.position.x,
-            0,
-            Float(characterNode.position.z)
-        )
-        clampCameraAgainstWalls()
+        motion.followCharacter()
     }
-    
-    /// Ideal camera distance from pivot (in local Z)
-    private var idealCameraZ: Float = 2.0
-    /// Minimum camera distance (so it doesn't clip into character)
-    private var minCameraZ:   Float = 0.3
-    
-    /// Ray-cast from character's head toward the ideal camera position.
-    /// If a wall is in the way, pull the camera in to just in front of it.
-    func clampCameraAgainstWalls() {
-        guard let root = sceneRoot else { return }
-        
-        // Head position in world space.
-        // Saat berdiri: charPos.y ≈ 0, kepala di +1.1.
-        // Saat rebahan: charPos.y ≈ 0.42 (kasur), tubuh flat, kepala hanya +0.15 di atasnya.
-        let charPos  = characterNode.worldPosition
-        let headOffY: Float = isLyingDown ? 0.15 : 1.1
-        let headPos  = SCNVector3(charPos.x, charPos.y + headOffY, charPos.z)
-        
-        // Compute IDEAL camera world position from pivot yaw + current local Y/Z offsets.
-        // Must NOT use cameraNode.worldPosition (may already be clamped).
-        let pivotYaw  = Float(cameraPivot.eulerAngles.y)
-        let localCamZ = idealCameraZ
-        let localCamY = Float(cameraNode.position.y)   // 1.1 normal, 2.8 saat rebahan
-        let worldCamX = charPos.x + sin(pivotYaw) * localCamZ
-        let worldCamY = charPos.y + localCamY
-        let worldCamZ = charPos.z + cos(pivotYaw) * localCamZ
-        let idealCamPos = SCNVector3(worldCamX, worldCamY, worldCamZ)
-        
-        let dx = idealCamPos.x - headPos.x
-        let dy = idealCamPos.y - headPos.y
-        let dz = idealCamPos.z - headPos.z
-        let dist = sqrt(dx*dx + dy*dy + dz*dz)
-        guard dist > 0.001 else { return }
-        
-        // Ray-cast — hanya peduli node bernama "wall"
-        // Dulu: searchMode .all ke SELURUH scene (furnitur, karakter, partikel) tiap frame.
-        // Sekarang: hanya node dinding, dan cukup hit terdekat.
-        let options: [String: Any] = [
-            SCNHitTestOption.searchMode.rawValue: SCNHitTestSearchMode.closest.rawValue,
-            SCNHitTestOption.categoryBitMask.rawValue: KostViewModel.wallCategory,
-            SCNHitTestOption.ignoreHiddenNodes.rawValue: true,
-            SCNHitTestOption.backFaceCulling.rawValue: false
-        ]
-        
-        let hits = root.hitTestWithSegment(from: headPos, to: idealCamPos, options: options)
-        
-        let wallHit = hits.first { hit in
-            var n: SCNNode? = hit.node
-            while let node = n {
-                if node.name == "wall" { return true }
-                n = node.parent
-            }
-            return false
-        }
-        
-        let targetZ: Float
-        if let hit = wallHit {
-            let hx = hit.worldCoordinates.x - headPos.x
-            let hy = hit.worldCoordinates.y - headPos.y
-            let hz = hit.worldCoordinates.z - headPos.z
-            let hitDist = sqrt(hx*hx + hy*hy + hz*hz)
-            // margin 0.30m agar kamera tidak pernah menyentuh dinding
-            let clampedDist = max(minCameraZ, hitDist - 0.30)
-            targetZ = idealCameraZ * (clampedDist / dist)
-        } else {
-            targetZ = idealCameraZ
-        }
-        
-        // Langsung snap saat kamera perlu mundur (mendekati dinding), smooth saat kembali
-        let current = cameraNode.position.z
-        let alpha: Float = targetZ < current ? 1.0 : 0.15
-        let newZ = current + (targetZ - current) * alpha
-        cameraNode.position.z = newZ
-        
-        // ── Hard clamp: pastikan posisi WORLD kamera tidak menembus dinding apapun ──
-        // Dinding inner kamar: X ∈ [-2.8, 2.8], Z ∈ [-1.8, 1.8], margin kamera 0.25m
-        let camMargin: Float = 0.25
-        let camWorldX = charPos.x + sin(pivotYaw) * newZ
-        let camWorldZ = charPos.z + cos(pivotYaw) * newZ
-        
-        var allowedCamMinX: Float = -2.8
-        var allowedCamMaxX: Float =  2.8
-        var allowedCamMinZ: Float = -1.8
-        var allowedCamMaxZ: Float =  1.8
-        
-        let inDoorCamX = camWorldX > 0.5 && camWorldX < 2.5
-        
-        if isDoorOpen {
-            if camWorldZ > 0.8 {
-                allowedCamMaxZ = 3.8
-                if !inDoorCamX || camWorldZ > 1.8 {
-                    allowedCamMinX = -4.2
-                    allowedCamMaxX =  4.2
-                    if camWorldZ > 1.2 && !inDoorCamX {
-                        allowedCamMinZ = 1.2
-                    }
-                }
-            }
-        }
-        
-        let clampedCamX = max(allowedCamMinX + camMargin, min(allowedCamMaxX - camMargin, camWorldX))
-        let clampedCamZ = max(allowedCamMinZ + camMargin, min(allowedCamMaxZ - camMargin, camWorldZ))
-        
-        // Jika hard clamp memotong posisi kamera, kurangi jarak Z kamera
-        if clampedCamX != camWorldX || clampedCamZ != camWorldZ {
-            // Hitung jarak yang aman berdasarkan posisi ter-clamp
-            let dcx = clampedCamX - charPos.x
-            let dcz = clampedCamZ - charPos.z
-            let safeDist = sqrt(dcx*dcx + dcz*dcz)
-            // Proyeksikan ke arah kamera (pivot Z)
-            let safeZ = max(minCameraZ, safeDist)
-            cameraNode.position.z = min(newZ, safeZ)
-        }
-    }
-    
-    // MARK: - Movement
-    
-    func move(dx: Float, dy: Float, dt: CFTimeInterval = 1.0 / 60) {
-        guard !isLyingDown, !isSitting else { return }
-        // Kecepatan independen frame rate (speed dikalibrasi untuk 60 FPS).
-        let frameScale = Float(dt * 60)
-        // Kamera ada di posisi (sin(yaw)*Z, 1.1, cos(yaw)*Z) relatif pivot.
-        // "Maju" (dy+) = bergerak menjauh dari kamera = arah berlawanan dari kamera
-        // forward = (-sin(yaw), 0, -cos(yaw))
-        // strafe kanan (dx+) = (cos(yaw), 0, -sin(yaw))
-        let camYaw = yaw
-        let step = speed * frameScale
-        let fwdX = -sin(camYaw) * dy * step
-        let fwdZ = -cos(camYaw) * dy * step
-        let strX =  cos(camYaw) * dx * step
-        let strZ = -sin(camYaw) * dx * step
-        
-        let newX = Float(characterNode.position.x) + fwdX + strX
-        let newZ = Float(characterNode.position.z) + fwdZ + strZ
-        
-        let moving = abs(dx) > 0.05 || abs(dy) > 0.05
-        if isWalking != moving {
-            isWalking = moving
-            if moving {
-                FootstepPlayer.shared.start()
-                startWalkAnimation()
-            } else {
-                FootstepPlayer.shared.stop()
-                stopWalkAnimation()
-            }
-        }
-        
-        var allowedMinX = minX
-        var allowedMaxX = maxX
-        var allowedMinZ = minZ
-        var allowedMaxZ = maxZ
-        
-        let oldX = Float(characterNode.position.x)
-        let oldZ = Float(characterNode.position.z)
-        
-        // Cek kalau sedang di luar ruangan / koridor luas
-        let inCorridor = oldZ > corridorMinZ + 0.3
-        // Cek di dalam ruangan (termasuk ambang sejauh tembok)
-        let inRoom = oldZ <= maxZ
-        // Cek area sedang transit di threshold pintu
-        let inTransit = oldZ > maxZ && oldZ <= corridorMinZ + 0.3
 
-        if isDoorOpen {
-            if inCorridor {
-                // Udah murni di koridor luas, bebas ke kiri kanan koridor
-                allowedMinX = corridorMinX
-                allowedMaxX = corridorMaxX
-                allowedMaxZ = corridorMaxZ
-                
-                // Kalau mau kembali masuk threshold pintu, X harus selaras pintu
-                if newX > doorMinX && newX < doorMaxX {
-                    allowedMinZ = minZ // bisa tembus masuk kembali ke kamar
-                } else {
-                    allowedMinZ = corridorMinZ + 0.4 // ga boleh nembus tembok dinding dari luar
-                }
-            } else if inTransit {
-                // Sedang jalan di area tebal dinding pintu
-                allowedMinX = doorMinX
-                allowedMaxX = doorMaxX
-                allowedMinZ = minZ
-                allowedMaxZ = corridorMaxZ
-            } else if inRoom {
-                // Di dalam kamar, batasan standar (X murni kamar)
-                // Tapi z bisa terus ke koridor kalau X pas dari awal kena pintu
-                if oldX > doorMinX && oldX < doorMaxX {
-                    allowedMaxZ = corridorMaxZ
-                    
-                    // Supaya gak meleset waktu nyenggol kusen pintu saat tembus:
-                    if newZ > maxZ {
-                        allowedMinX = doorMinX
-                        allowedMaxX = doorMaxX
-                    }
-                }
-            }
-        }
-        
-        let clampedX = SCNFloat(max(allowedMinX, min(allowedMaxX, newX)))
-        let clampedZ = SCNFloat(max(allowedMinZ, min(allowedMaxZ, newZ)))
-        characterNode.position.x = clampedX
-        characterNode.position.z = clampedZ
-        characterNode.position.y = 0
-        
-        // Cek proximity ±10x/detik saja — cukup responsif dan jauh lebih hemat.
-        proximityElapsed += dt
-        if proximityElapsed >= 0.1 {
-            proximityElapsed = 0
-            refreshProximity()
-        }
-        
-        // Karakter smooth rotate ke arah gerak
-        if abs(fwdX + strX) > 0.001 || abs(fwdZ + strZ) > 0.001 {
-            let targetFacing = atan2(fwdX + strX, -(fwdZ + strZ))
-            var diff = targetFacing - charFacing
-            while diff >  Float.pi { diff -= 2 * Float.pi }
-            while diff < -Float.pi { diff += 2 * Float.pi }
-            charFacing += diff * (1 - pow(0.75, frameScale))
-            characterNode.eulerAngles.y = SCNFloat(charFacing)
-        }
-        
-        // CameraPivot selalu ikut posisi karakter
-        updateCameraForTPP()
+    func clampCameraAgainstWalls() {
+        motion.clampCamera()
     }
-    
+
     func stopWalking() {
         guard isWalking else { return }
         isWalking = false
@@ -679,14 +448,12 @@ class KostViewModel: ObservableObject {
         SCNTransaction.animationDuration = 0.5
         SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         if isEditMode {
-            idealCameraZ = 0.15
-            minCameraZ   = 0.10
-            cameraNode.position = SCNVector3(0, 2.7, idealCameraZ)
+            motion.setCameraDistance(ideal: 0.15, min: 0.10)
+            cameraNode.position = SCNVector3(0, 2.7, 0.15)
             cameraNode.eulerAngles = SCNVector3(-Float.pi / 2.3, 0, 0)
         } else {
-            idealCameraZ = 2.0
-            minCameraZ   = 0.30
-            cameraNode.position = SCNVector3(0, 1.1, idealCameraZ)
+            motion.setCameraDistance(ideal: 2.0, min: 0.30)
+            cameraNode.position = SCNVector3(0, 1.1, 2.0)
             cameraNode.eulerAngles = SCNVector3(-0.15, 0, 0)
         }
         SCNTransaction.commit()
@@ -2568,10 +2335,3 @@ class KostViewModel: ObservableObject {
     }
 }
 
-// MARK: - Display Link Proxy
-/// CADisplayLink me-retain target-nya; proxy ini mencegah retain cycle dengan view model.
-final class DisplayLinkProxy: NSObject {
-    private let handler: (CADisplayLink) -> Void
-    init(_ handler: @escaping (CADisplayLink) -> Void) { self.handler = handler }
-    @objc func tick(_ link: CADisplayLink) { handler(link) }
-}
