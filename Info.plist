@@ -24,6 +24,8 @@
 	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.simulation-games</string>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSLocationWhenInUseUsageDescription</key>

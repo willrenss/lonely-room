@@ -4,6 +4,31 @@ import Combine
 import UIKit
 #endif
 
+// MARK: - Audio Queue
+/// Semua operasi audio yang bisa memblokir (load file, setCategory, play) jalan di sini,
+/// supaya tidak menghentikan main thread dan bikin game tersendat.
+nonisolated enum AudioQueue {
+    static let shared = DispatchQueue(label: "kost.audio", qos: .userInitiated)
+}
+
+nonisolated final class AudioPlayerBox: @unchecked Sendable {
+    let player: AVAudioPlayer
+
+    private init(player: AVAudioPlayer) { self.player = player }
+
+    /// Panggil dari AudioQueue: membaca file dari Asset Catalog.
+    static func make(asset name: String, loops: Int) -> AudioPlayerBox? {
+        guard let asset = NSDataAsset(name: name),
+              let p = try? AVAudioPlayer(data: asset.data, fileTypeHint: "mp3") else {
+            print("⚠️ Audio: asset '\(name)' tidak ditemukan")
+            return nil
+        }
+        p.numberOfLoops = loops
+        p.prepareToPlay()
+        return AudioPlayerBox(player: p)
+    }
+}
+
 // MARK: - Audio Session
 /// Satu tempat untuk mengatur kategori AVAudioSession.
 /// Sebelumnya tiap player men-set kategori sendiri (.ambient vs .playback) sehingga
@@ -12,84 +37,121 @@ enum AudioSessionManager {
     /// Default: efek suara bercampur dengan musik app lain & ikut tombol silent.
     static func useAmbient() {
         #if canImport(UIKit)
-        let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
-        try? s.setActive(true)
+        AudioQueue.shared.async {
+            let s = AVAudioSession.sharedInstance()
+            try? s.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+            try? s.setActive(true)
+        }
         #endif
     }
 
     /// Saat radio diputar: kategori playback agar tetap bunyi di background & muncul di lock screen.
     static func useMusicPlayback() {
         #if canImport(UIKit)
-        let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playback, mode: .default, options: [])
-        try? s.setActive(true)
+        AudioQueue.shared.async {
+            let s = AVAudioSession.sharedInstance()
+            try? s.setCategory(.playback, mode: .default, options: [])
+            try? s.setActive(true)
+        }
         #endif
     }
 }
 
+// MARK: - Preload
+enum SoundEffects {
+    /// Muat semua efek di background saat app dibuka, jadi pemakaian pertama tidak tersendat.
+    static func preload() {
+        _ = ClockPlayer.shared
+        _ = DoorPlayer.shared
+        _ = FootstepPlayer.shared
+        _ = WateringPlayer.shared
+        _ = RainPlayer.shared
+        _ = WindPlayer.shared
+    }
+}
+
 // MARK: - Base Sound Effect Player
-/// Player efek suara generik: load dari Asset Catalog sekali, volume mengikuti
+/// Player efek suara generik: file dimuat di AudioQueue, volume mengikuti
 /// slider "Efek Suara" di Pengaturan, dan punya helper fade tanpa timer bocor.
 class SoundEffectPlayer {
-    private let player: AVAudioPlayer?
+    private var box: AudioPlayerBox?
+    /// Perintah yang masuk sebelum file selesai dimuat.
+    private var pendingActions: [@Sendable (AudioPlayerBox) -> Void] = []
     private let baseVolume: Float
     /// Level fade 0...1 relatif terhadap baseVolume.
     private var gain: Float
     private var fadeTimer: Timer?
     private var settingsSink: AnyCancellable?
+    private var isActive = false
 
     init(asset name: String, baseVolume: Float, loops: Bool, startSilent: Bool = false) {
         self.baseVolume = baseVolume
         self.gain = startSilent ? 0 : 1
-        if let asset = NSDataAsset(name: name),
-           let p = try? AVAudioPlayer(data: asset.data, fileTypeHint: "mp3") {
-            p.numberOfLoops = loops ? -1 : 0
-            p.prepareToPlay()
-            player = p
-        } else {
-            print("⚠️ SoundEffectPlayer: asset '\(name)' tidak ditemukan")
-            player = nil
-        }
-        applyVolume()
         settingsSink = AppSettings.shared.$sfxVolume
             .dropFirst()
             .sink { [weak self] v in self?.applyVolume(sfx: v) }
+        AudioQueue.shared.async { [weak self] in
+            guard let loaded = AudioPlayerBox.make(asset: name, loops: loops ? -1 : 0) else { return }
+            Task { @MainActor [weak self] in self?.attach(loaded) }
+        }
     }
 
-    var isPlaying: Bool { player?.isPlaying ?? false }
+    private func attach(_ loaded: AudioPlayerBox) {
+        box = loaded
+        applyVolume()
+        let actions = pendingActions
+        pendingActions.removeAll()
+        actions.forEach { action in AudioQueue.shared.async { action(loaded) } }
+    }
+
+    private func perform(_ action: @escaping @Sendable (AudioPlayerBox) -> Void) {
+        if let box {
+            AudioQueue.shared.async { action(box) }
+        } else {
+            pendingActions.append(action)
+        }
+    }
+
+    var isPlaying: Bool { isActive }
 
     private func applyVolume(sfx: Double = AppSettings.shared.sfxVolume) {
-        player?.volume = baseVolume * gain * Float(sfx)
+        box?.player.volume = baseVolume * gain * Float(sfx)
     }
 
     /// Mulai loop jika belum berjalan.
     func startLoop() {
-        guard let player, !player.isPlaying else { return }
-        player.play()
+        guard !isActive else { return }
+        isActive = true
+        perform { if !$0.player.isPlaying { $0.player.play() } }
     }
 
     /// Mainkan dari awal (one-shot).
     func playOnce() {
-        guard let player else { return }
-        player.stop()
-        player.currentTime = 0
-        player.play()
+        perform {
+            $0.player.stop()
+            $0.player.currentTime = 0
+            $0.player.play()
+        }
     }
 
-    func pause() { player?.pause() }
+    func pause() {
+        isActive = false
+        perform { $0.player.pause() }
+    }
 
     /// Stop dan kembalikan ke awal.
     func halt() {
         fadeTimer?.invalidate(); fadeTimer = nil
-        player?.stop()
-        player?.currentTime = 0
+        isActive = false
+        perform {
+            $0.player.stop()
+            $0.player.currentTime = 0
+        }
     }
 
     /// Fade gain ke `target` (0...1). Fade sebelumnya otomatis dibatalkan.
     func fade(to target: Float, duration: TimeInterval, completion: (() -> Void)? = nil) {
         fadeTimer?.invalidate()
-        guard player != nil else { completion?(); return }
         let steps = max(1, Int(duration * 30))
         let delta = (target - gain) / Float(steps)
         var remaining = steps

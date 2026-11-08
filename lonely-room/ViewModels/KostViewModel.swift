@@ -120,6 +120,8 @@ class KostViewModel: ObservableObject {
     private var ambientTimer: Timer?
     private var lastTODHour = Calendar.current.component(.hour, from: Date())
     private var lastPlantLevel: Double = -1
+    private var joystickHeld = false
+    private var renderIdleWork: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
 
     // leg pivot nodes untuk animasi berjalan
@@ -190,12 +192,27 @@ class KostViewModel: ObservableObject {
     /// Selama joystick ditekan SCNView dipaksa render terus supaya delegate dipanggil tiap frame.
     func setJoystick(dx: Float, dy: Float) {
         motion.setInput(SIMD2(dx, dy))
+        joystickHeld = true
+        keepRendering()
+    }
+
+    /// Render loop harus hidup selama ada input, plus sebentar untuk ekor animasi kamera.
+    private func keepRendering() {
+        renderIdleWork?.cancel()
         if scnView?.rendersContinuously == false { scnView?.rendersContinuously = true }
+        guard !joystickHeld else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.joystickHeld else { return }
+            self.scnView?.rendersContinuously = false
+        }
+        renderIdleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     func releaseJoystick() {
         motion.setInput(.zero)
-        scnView?.rendersContinuously = false
+        joystickHeld = false
+        keepRendering()
         stopWalking()
     }
 
@@ -983,9 +1000,8 @@ class KostViewModel: ObservableObject {
     }
     
     func rotateCamera(by delta: Float) {
-        yaw += delta
-        cameraPivot.eulerAngles.y = SCNFloat(yaw)
-        clampCameraAgainstWalls()
+        motion.rotate(by: delta)
+        keepRendering()
     }
     // MARK: - Persistence
     

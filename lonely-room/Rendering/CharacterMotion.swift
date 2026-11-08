@@ -34,6 +34,7 @@ nonisolated final class CharacterMotion: NSObject, SCNSceneRendererDelegate, @un
     private weak var _root: SCNNode?
     private var _input = SIMD2<Float>.zero
     private var _yaw: Float = 0
+    private var _targetYaw: Float = 0
     private var _charFacing: Float = 0
     private var _isDoorOpen = false
     private var _isLyingDown = false
@@ -66,7 +67,7 @@ nonisolated final class CharacterMotion: NSObject, SCNSceneRendererDelegate, @un
     }
     var yaw: Float {
         get { locked { _yaw } }
-        set { locked { _yaw = newValue } }
+        set { locked { _yaw = newValue; _targetYaw = newValue } }
     }
     var charFacing: Float {
         get { locked { _charFacing } }
@@ -87,6 +88,9 @@ nonisolated final class CharacterMotion: NSObject, SCNSceneRendererDelegate, @un
 
     func setInput(_ v: SIMD2<Float>) { locked { _input = v } }
 
+    /// Input putar kamera; diterapkan bertahap di render loop.
+    func rotate(by delta: Float) { locked { _targetYaw += delta } }
+
     func setCameraDistance(ideal: Float, min: Float) {
         locked { _idealCameraZ = ideal; _minCameraZ = min }
     }
@@ -94,8 +98,13 @@ nonisolated final class CharacterMotion: NSObject, SCNSceneRendererDelegate, @un
     // MARK: - SCNSceneRendererDelegate (render thread)
 
     func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
-        let dt = lastTime == 0 ? 1.0 / 60 : min(max(time - lastTime, 0), 1.0 / 20)
+        // SceneKit berhenti render saat scene diam. Jeda itu bukan waktu berjalan,
+        // kalau dihitung karakter melompat di langkah pertama.
+        let gap = time - lastTime
+        let dt = (lastTime == 0 || gap <= 0 || gap > 0.1) ? 1.0 / 60 : gap
         lastTime = time
+
+        applyCameraRotation(dt: dt)
 
         let (input, walkAllowed) = locked { (_input, _canWalk) }
         let active = walkAllowed && (abs(input.x) > 0.02 || abs(input.y) > 0.02)
@@ -104,6 +113,18 @@ nonisolated final class CharacterMotion: NSObject, SCNSceneRendererDelegate, @un
             return
         }
         step(input: input, dt: dt)
+    }
+
+    private func applyCameraRotation(dt: TimeInterval) {
+        let rotated: Float? = locked {
+            let diff = _targetYaw - _yaw
+            guard abs(diff) > 0.0005 else { return nil }
+            _yaw += diff * (1 - pow(0.55, Float(dt * 60)))
+            return _yaw
+        }
+        guard let rotated else { return }
+        pivot.eulerAngles.y = SCNFloat(rotated)
+        if !isLyingDown { clampCamera(dt: dt) }
     }
 
     // MARK: - Movement

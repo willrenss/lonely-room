@@ -224,6 +224,7 @@ struct ContentView: View {
         .persistentSystemOverlays(.hidden)
         .onAppear {
             AudioSessionManager.useAmbient()
+            SoundEffects.preload()
             vm.onSelectionChanged = { item in
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
                     if item != nil {

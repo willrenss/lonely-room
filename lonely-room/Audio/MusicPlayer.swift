@@ -14,7 +14,10 @@ final class MusicPlayer: NSObject, ObservableObject {
     @Published var queueIndex:   Int    = 0
     @Published var queueCount:   Int    = 0
 
-    private var player:        AVAudioPlayer?
+    private var playerBox:     AudioPlayerBox?
+    private var player:        AVAudioPlayer? { playerBox?.player }
+    /// Naik tiap ada permintaan lagu baru; hasil load yang sudah basi diabaikan.
+    private var loadGeneration = 0
     private var progressTimer: Timer?
     private var assetNames:    [String] = []
     private var assetTitles:   [String] = []
@@ -49,10 +52,9 @@ final class MusicPlayer: NSObject, ObservableObject {
             ("radio-top-flow-deep-breathing-148302",                      "Deep Breathing"),
             ("radio-watermello-lofi-chill-lofi-girl-lofi-488388",         "Lofi Chill"),
         ]
-        // Cukup cek keberadaan via NSDataAsset tanpa menyimpan datanya di memori.
-        let available = entries.filter { NSDataAsset(name: $0.name) != nil }
-        assetNames  = available.map(\.name)
-        assetTitles = available.map(\.title)
+        // Daftar tetap: jangan buka NSDataAsset di sini, itu membaca ±21 MB di main thread.
+        assetNames  = entries.map(\.name)
+        assetTitles = entries.map(\.title)
         queueCount  = assetNames.count
         queueIndex  = 0
     }
@@ -60,16 +62,17 @@ final class MusicPlayer: NSObject, ObservableObject {
     // MARK: - Playback control
     func play() {
         AudioSessionManager.useMusicPlayback()
-        if player == nil { playCurrentItem(); return }
-        player?.play()
+        guard let box = playerBox else { playCurrentItem(); return }
+        AudioQueue.shared.async { box.player.play() }
         isPlaying = true
         startProgressTimer()
         updateNowPlaying()
     }
 
     func pause() {
-        guard isPlaying else { return }
-        player?.pause()
+        loadGeneration += 1
+        guard isPlaying, let box = playerBox else { return }
+        AudioQueue.shared.async { box.player.pause() }
         isPlaying = false
         stopProgressTimer()
         updateNowPlaying()
@@ -101,18 +104,30 @@ final class MusicPlayer: NSObject, ObservableObject {
     private func playCurrentItem() {
         guard !assetNames.isEmpty else { return }
         let name = assetNames[queueIndex]
-        guard let asset = NSDataAsset(name: name),
-              let p = try? AVAudioPlayer(data: asset.data, fileTypeHint: "mp3")
-        else { return }
-
+        let title = assetTitles[queueIndex]
+        loadGeneration += 1
+        let generation = loadGeneration
         AudioSessionManager.useMusicPlayback()
-        player?.stop()
+        AudioQueue.shared.async { [weak self] in
+            guard let loaded = AudioPlayerBox.make(asset: name, loops: 0) else { return }
+            Task { @MainActor [weak self] in
+                self?.startLoaded(loaded, title: title, generation: generation)
+            }
+        }
+    }
+
+    private func startLoaded(_ loaded: AudioPlayerBox, title: String, generation: Int) {
+        guard generation == loadGeneration else { return }
+        let previous = playerBox
+        let p = loaded.player
         p.delegate = self
         p.volume = Float(AppSettings.shared.musicVolume)
-        p.prepareToPlay()
-        p.play()
-        player       = p
-        currentTitle = assetTitles[queueIndex]
+        AudioQueue.shared.async {
+            previous?.player.stop()
+            loaded.player.play()
+        }
+        playerBox    = loaded
+        currentTitle = title
         duration     = p.duration
         progress     = 0
         isPlaying    = true
